@@ -124,7 +124,12 @@ void Translator::V_FRACT(const Decoder::Instruction& inst, IR::Type type) {
 	// one instead. The ordered compare lets NaN through.
 	const auto destination = DestinationOperand(inst);
 	if (type == IR::Type::F64) {
-		const auto result    = ir.Emit(IR::ValueOpcode::FPFract64, {ReadOperand(inst.src0, type)});
+		const auto fract = ir.Emit(IR::ValueOpcode::FPFract64, {ReadOperand(inst.src0, type)});
+		// Mesa's Fract keeps a signaling NaN; V_FRACT_F64 always returns a quiet one.
+		const auto quiet = ir.Emit(IR::ValueOpcode::BitCastF64U64,
+		                           {IR::Value(uint64_t {0x7ff8000000000000})});
+		const auto is_nan = ir.Emit(IR::ValueOpcode::FPIsNan64, {fract});
+		const auto result = ir.Emit(IR::ValueOpcode::SelectF64, {is_nan, quiet, fract});
 		const auto below_one = ir.Emit(IR::ValueOpcode::BitCastF64U64,
 		                               {IR::Value(uint64_t {0x3fefffffffffffff})});
 		const auto above     = ir.Emit(IR::ValueOpcode::FPOrdGreaterThan64, {result, below_one});
