@@ -23785,9 +23785,8 @@ private:
             "shaderStorageImageWriteWithoutFormat is not supported");
     Require("VulkanHarness", "dispatch",
             available_features.shaderImageGatherExtended == true &&
-                available_features.shaderResourceMinLod == true &&
-                available_derivatives.computeDerivativeGroupQuads == true,
-            "image gather, MinLod or compute derivative quads are not supported");
+                available_features.shaderResourceMinLod == true,
+            "image gather or MinLod are not supported");
     Require("VulkanHarness", "dispatch",
             available_features11.storageBuffer16BitAccess == true &&
                 available_features12.storageBuffer8BitAccess == true,
@@ -23884,7 +23883,11 @@ private:
     device_features13.synchronization2 = true;
     vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{};
     derivatives.pNext = &device_features13;
-    derivatives.computeDerivativeGroupQuads = true;
+    // No compute case emits the derivative capability; only the dedicated
+    // --compute-derivatives-only check needs it. Request what the device has so the
+    // harness can run the rest of the suite on devices without quad derivatives.
+    derivatives.computeDerivativeGroupQuads = available_derivatives.computeDerivativeGroupQuads;
+    derivatives.computeDerivativeGroupLinear = available_derivatives.computeDerivativeGroupLinear;
     // Requesting a feature the device does not support fails device creation, so the
     // rasterization feature chain is only chained in when every part is available.
     vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip{};
