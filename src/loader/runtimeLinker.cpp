@@ -1597,7 +1597,9 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	bool is_shared   = program->elf->IsShared();
 	bool is_next_gen = program->elf->IsNextGen();
 
-	EXIT_NOT_IMPLEMENTED(!is_shared && !is_next_gen);
+	// The ELF header check accepts executables with the pre-next-gen ABI version (ET_DYNEXEC with
+	// EI_ABIVERSION 0), so the marker only decides how NoAccess LOAD segments are protected. Early
+	// PS5 executables use it (Inscryption, PPSA07023).
 
 	const auto* ehdr = program->elf->GetEhdr();
 	const auto* phdr = program->elf->GetPhdr();

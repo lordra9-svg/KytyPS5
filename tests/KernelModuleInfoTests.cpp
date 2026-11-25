@@ -241,6 +241,18 @@ TEST(RuntimeLinker, BindsImportsByNidLibraryAndModuleName) {
 	EXPECT_EQ(address, nullptr);
 }
 
+TEST(RuntimeLinker, LoadsAnExecutableWithTheLegacyAbiVersion) {
+	// The ELF header validation accepts the pre-next-gen ABI version on executables, so loading
+	// one must not stop at the ABI marker (Inscryption, PPSA07023).
+	auto image                        = MODULE_IMAGE;
+	image.ehdr.e_type                 = ET_DYNEXEC;
+	image.ehdr.e_ident[EI_ABIVERSION] = 0;
+	auto* program                     = LoadModule("kyty_legacy_abi_exec.elf", image);
+	ASSERT_NE(program, nullptr);
+	EXPECT_FALSE(program->elf->IsShared());
+	EXPECT_FALSE(program->elf->IsNextGen());
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
