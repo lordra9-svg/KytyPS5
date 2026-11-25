@@ -2180,9 +2180,14 @@ public:
   ~VulkanHarness() { Destroy(); }
   // Host float min/max is used on AMD GPUs, as in Kyty.
   [[nodiscard]] bool SupportsNativeFloatMinMax() const {
-    vk::PhysicalDeviceProperties properties;
-    m_physical_device.getProperties(&properties);
-    return properties.vendorID == 0x1002u;
+    vk::PhysicalDeviceDriverProperties driver{};
+    vk::PhysicalDeviceProperties2 properties;
+    properties.pNext = &driver;
+    m_physical_device.getProperties2(&properties);
+    // AMD's own drivers implement NMin/NMax as v_min/v_max; Mesa's RADV uses the
+    // GLSL.std.450 semantics, which do not return the other operand for a NaN source.
+    return properties.properties.vendorID == 0x1002u &&
+           driver.driverID != vk::DriverId::eMesaRadv;
   }
 
   VulkanHarness(const VulkanHarness &) = delete;
