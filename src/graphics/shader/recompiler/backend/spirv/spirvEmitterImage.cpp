@@ -267,12 +267,12 @@ uint32_t ResultVector(ValueEmitContext& ctx, uint32_t value,
 				                         high_bits, mask),
 				                  ConstantU32(ctx.state, 16u)));
 			} else {
-				const auto pair = ctx.state.builder.AllocateId();
-				ctx.state.builder.AddFunction(spv::OpCompositeConstruct,
-				                              TypeF32Vector(ctx.state, 2), pair, low, high);
-				packed[word] = ctx.state.builder.AllocateId();
-				ctx.state.builder.AddFunction(spv::OpExtInst, TypeU32(ctx.state), packed[word],
-				                              GlslStd450(ctx.state), GLSLstd450PackHalf2x16, pair);
+				// PackHalf2x16 lowers to round-to-zero on some drivers; the guest D16 load
+				// rounds to nearest even.
+				packed[word] = EmitNative<spv::OpBitFieldInsert, IR::Type::U32>(
+				    ctx.state, EmitF32BitsToF16RneBits(ctx.state, FloatBits(ctx, low)),
+				    EmitF32BitsToF16RneBits(ctx.state, FloatBits(ctx, high)),
+				    ConstantU32(ctx.state, 16), ConstantU32(ctx.state, 16));
 			}
 		}
 		const auto result = ctx.state.builder.AllocateId();
