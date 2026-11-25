@@ -12667,6 +12667,14 @@ public:
       TextureCacheTestAccess::ClearImage(context.GetTextureCache(), scheduler.Current(),
                                          source.image_id,
                                          {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, red);
+      // The base subresource is only read below to prove the resolve did not write it. Clear it,
+      // so a reused host allocation cannot leave unrelated bytes there before the resolve.
+      vk::ClearValue clear_zero{};
+      clear_zero.color.float32 = std::array{0.0f, 0.0f, 0.0f, 0.0f};
+      TextureCacheTestAccess::ClearImage(context.GetTextureCache(), scheduler.Current(),
+                                         whole.image_id,
+                                         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                                         clear_zero);
       registers.SetColorControl({.mode = 3});
       Require(name, "resolve",
               RenderExecutorTestAccess::ResolveColorTargets(executor, scheduler.Current()),
