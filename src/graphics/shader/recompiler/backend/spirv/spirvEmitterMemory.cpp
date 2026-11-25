@@ -77,8 +77,22 @@ BufferAddress CalculateBufferAddress(EmitterState& state, uint32_t index, uint32
 }
 
 uint32_t BufferLane(EmitterState& state) {
-	return Binary(state, spv::OpBitwiseAnd, TypeU32(state), EmitSubgroupLocalInvocationId(state),
-	              ConstantU32(state, 63));
+	// The guest lane runs inside the host subgroup: a wave32 program on a 64-lane host keeps
+	// both guest waves in one subgroup, while a wave64 program on a 32-lane host splits across
+	// two emissions. The host lane alone is not the guest lane.
+	const auto* workgroup = ShaderWorkgroupInput(state.program.stage, state.input_info);
+	const auto host_size = workgroup != nullptr && workgroup->host_subgroup_size != 0u
+	                           ? workgroup->host_subgroup_size
+	                           : state.program.wave_size;
+	const auto guest_mask =
+	    std::min(host_size, state.program.wave_size) - 1u;
+	auto lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
+	                   EmitSubgroupLocalInvocationId(state), ConstantU32(state, guest_mask));
+	if (state.lane_half != 0u) {
+		lane = Binary(state, spv::OpIAdd, TypeU32(state), lane,
+		              ConstantU32(state, state.lane_half * host_size));
+	}
+	return lane;
 }
 
 uint32_t BufferByteAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
