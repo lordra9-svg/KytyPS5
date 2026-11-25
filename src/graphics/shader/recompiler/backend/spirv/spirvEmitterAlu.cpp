@@ -278,7 +278,43 @@ uint32_t EmitFPRecip32(EmitterState& state, uint32_t arg0) {
 
 uint32_t EmitFPRecip64(EmitterState& state, uint32_t arg0) {
 	const auto one = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3ff00000u);
-	return EmitNative<spv::OpFDiv, IR::Type::F64>(state, one, arg0);
+	// Some drivers flush an f64 denormal divisor or quotient in FDiv even when the module asks
+	// for DenormPreserve. The scale factors are exact powers of two, so moving a denormal
+	// divisor, or a divisor whose reciprocal is denormal, into the normal range and undoing the
+	// scale afterwards only rounds when the final result lands in the denormal range.
+	const auto bits      = Unary(state, spv::OpBitcast, TypeU64(state), arg0);
+	const auto magnitude = Binary(state, spv::OpBitwiseAnd, TypeU64(state), bits,
+	                              ConstantU64(state, 0x7fffffffffffffffull));
+	const auto exponent  = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
+	                              Binary(state, spv::OpShiftRightLogical, TypeU64(state), magnitude,
+	                                     ConstantU64(state, 52)),
+	                              ConstantU64(state, 0x7ffu));
+	const auto mantissa  = Binary(state, spv::OpBitwiseAnd, TypeU64(state), magnitude,
+	                              ConstantU64(state, 0x000fffffffffffffull));
+	const auto is_denormal =
+	    Binary(state, spv::OpLogicalAnd, TypeBool(state),
+	           Binary(state, spv::OpIEqual, TypeBool(state), exponent, ConstantU64(state, 0)),
+	           Binary(state, spv::OpINotEqual, TypeBool(state), mantissa, ConstantU64(state, 0)));
+	// A finite divisor above 2^1022 has a reciprocal below the smallest normal.
+	const auto is_large =
+	    Binary(state, spv::OpLogicalAnd, TypeBool(state),
+	           Binary(state, spv::OpULessThan, TypeBool(state), exponent,
+	                  ConstantU64(state, 0x7ffu)),
+	           Binary(state, spv::OpUGreaterThan, TypeBool(state), magnitude,
+	                  ConstantU64(state, 0x7fd0000000000000ull)));
+	const auto up   = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x43500000u);
+	const auto down = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3c900000u);
+	const auto scale_in =
+	    Select(state, TypeF64(state), is_denormal,
+	           EmitNative<spv::OpFMul, IR::Type::F64>(state, arg0, up),
+	           Select(state, TypeF64(state), is_large,
+	                  EmitNative<spv::OpFMul, IR::Type::F64>(state, arg0, down), arg0));
+	const auto quotient = EmitNative<spv::OpFDiv, IR::Type::F64>(state, one, scale_in);
+	return Select(state, TypeF64(state), is_denormal,
+	              EmitNative<spv::OpFMul, IR::Type::F64>(state, quotient, up),
+	              Select(state, TypeF64(state), is_large,
+	                     EmitNative<spv::OpFMul, IR::Type::F64>(state, quotient, down),
+	                     quotient));
 }
 
 uint32_t EmitFPRecipIFlag32(EmitterState& state, uint32_t arg0) {
