@@ -1451,6 +1451,9 @@ bool RenderExecutor::ResolveColorTargets(CommandBuffer& buffer) {
 	RenderColorInfo dst {};
 	ResolveRenderColorTarget(buffer, src, 0, true, true);
 	ResolveRenderColorTarget(buffer, dst, 1, true, true);
+	std::printf("[resolve] src=%u/%u dst=%u/%u ids=%u/%u\n", src.desc.view_info.base_level,
+	            src.desc.view_info.base_layer, dst.desc.view_info.base_level,
+	            dst.desc.view_info.base_layer, src.image_id, dst.image_id);
 	if (src.desc.info.data.address == dst.desc.info.data.address &&
 	    src.guest_mip_level == dst.guest_mip_level &&
 	    src.guest_array_layer == dst.guest_array_layer) {

@@ -12690,7 +12690,7 @@ public:
 
   void CheckColorResolvePlacedTarget() {
     constexpr const char *name = "ColorResolvePlacedTarget";
-    constexpr uintptr_t base = 0x0000000209000000ull;
+    constexpr uintptr_t base = 0x000000020a000000ull;
     constexpr uint64_t destination = base + 0x100000;
     constexpr uint32_t extent = 256;
     constexpr uint64_t allocation_alignment = 0x10000;
@@ -12750,19 +12750,37 @@ public:
                                                          placed, 1);
       RenderExecutorTestAccess::ResolveRenderColorTarget(executor, scheduler.Current(),
                                                          source, 0);
+      std::printf("[placed] base=%u/%u guest=%u/%u extent=%ux%u levels=%u layers=%u "
+                  "id=%u/%u\n",
+                  placed.desc.view_info.base_level, placed.desc.view_info.base_layer,
+                  placed.guest_mip_level, placed.guest_array_layer,
+                  placed.desc.info.extent.width, placed.desc.info.extent.height,
+                  placed.desc.info.resources.levels, placed.desc.info.resources.layers,
+                  placed.image_id, whole.image_id);
       vk::ClearValue red{};
       red.color.float32 = std::array{1.0f, 0.0f, 0.0f, 1.0f};
       TextureCacheTestAccess::ClearImage(context.GetTextureCache(), scheduler.Current(),
                                          source.image_id,
                                          {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, red);
+      vk::ClearValue clear_zero{};
+      clear_zero.color.float32 = std::array{0.0f, 0.0f, 0.0f, 0.0f};
+      TextureCacheTestAccess::ClearImage(context.GetTextureCache(), scheduler.Current(),
+                                         whole.image_id,
+                                         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                                         clear_zero);
       registers.SetColorControl({.mode = 3});
       Require(name, "resolve",
               RenderExecutorTestAccess::ResolveColorTargets(executor, scheduler.Current()),
               "the resolve draw was not consumed");
+      const auto placed_texel =
+          ReadCachedTexel(name, context, whole.image_id, {}, {1, 1, 1}, mip ? 0 : 1, mip ? 1 : 0);
+      const auto base_texel = ReadCachedTexel(name, context, whole.image_id);
+      std::printf("[placed] level=%u layer=%u texel=%08x base=%08x\n", mip ? 1u : 0u,
+                  mip ? 0u : 1u, placed_texel.empty() ? 0u : placed_texel[0],
+                  base_texel.empty() ? 0u : base_texel[0]);
       Require(name, "placed subresource",
-              ReadCachedTexel(name, context, whole.image_id, {}, {1, 1, 1}, mip ? 0 : 1,
-                              mip ? 1 : 0) == std::vector<u32>{0xff0000ffu} &&
-                  ReadCachedTexel(name, context, whole.image_id) == std::vector<u32>{0u},
+              placed_texel == std::vector<u32>{0xff0000ffu} &&
+                  base_texel == std::vector<u32>{0u},
               "the resolve wrote the register level and layer, not the placed ones");
 
       RenderExecutorTestAccess::ResetBindings(executor);
@@ -59182,6 +59200,18 @@ int main(int argc, char **argv) {
     vulkan.CheckLargeSparseImageUpload();
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--color-resolve-placed-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckColorResolvePlacedTarget();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--probe-placed-order") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckRenderExecutorColorDiscovery();
+    vulkan.CheckRenderExecutorColor1DArrayDiscovery();
+    vulkan.CheckColorResolvePlacedTarget();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--image-overlap-only") == 0) {
     CheckDepthAttachmentWrites();
     CheckDepthFeedbackAspects();
@@ -59190,6 +59220,7 @@ int main(int argc, char **argv) {
     vulkan.CheckRasterization(false);
     vulkan.CheckRenderExecutorColorDiscovery();
     vulkan.CheckRenderExecutorColor1DArrayDiscovery();
+    vulkan.CheckColorResolvePlacedTarget();
     vulkan.CheckRenderExecutorColorVolumeDiscovery();
     vulkan.CheckRenderExecutorColorMetadataClear();
     vulkan.CheckSampledDccClear();
