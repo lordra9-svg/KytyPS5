@@ -1424,8 +1424,9 @@ int KYTY_SYSV_ABI NetPoolCreate(const char* name, int size, int flags) {
 	EXIT_IF(g_net == nullptr);
 
 	EXIT_NOT_IMPLEMENTED(flags != 0);
-	EXIT_NOT_IMPLEMENTED(size == 0);
 
+	// Only the configured size is kept (for sceNetGetMemoryPoolStats); nothing is allocated, so a
+	// zero-sized pool is valid and harmless (Gears of War Reloaded, #2411).
 	int id = g_net->PoolCreate(name, size);
 
 	if (id < 0) {

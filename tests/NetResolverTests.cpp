@@ -115,6 +115,24 @@ TEST_F(NetResolverTest, BooleanSocketOptions) {
   check(28, 41, 27);     // IPV6_V6ONLY
 }
 
+TEST_F(NetResolverTest, ZeroSizedPoolReportsZeroSize) {
+  // Gears of War Reloaded creates its network pool with size 0 (#2411).
+  // The emulator only records that number, so the pool must be created and
+  // reported as empty.
+  const int memid = Network::Net::NetPoolCreate("net2411", 0, 0);
+  ASSERT_GE(memid, 0);
+  Network::Net::NetMemoryPoolStats stats;
+  std::memset(&stats, 0xff, sizeof(stats));
+  ASSERT_EQ(Network::Net::NetGetMemoryPoolStats(memid, &stats), 0);
+  EXPECT_EQ(stats.pool_size, 0u);
+  EXPECT_EQ(stats.max_inuse_size, 0u);
+  EXPECT_EQ(stats.current_inuse_size, 0u);
+  EXPECT_EQ(stats.reserved, 0);
+  ASSERT_EQ(Network::Net::NetPoolDestroy(memid), 0);
+  EXPECT_EQ(Network::Net::NetGetMemoryPoolStats(memid, &stats),
+            Network::NET_ERROR_EBADF);
+}
+
 TEST_F(NetResolverTest, SslMemoryPoolStatsReportInitPoolSize) {
   Libs::LibSsl::InitNet_1_Ssl(&symbols);
   const auto get_stats = Function<SslGetMemoryPoolStats>("-PoIzr3PEk0");
