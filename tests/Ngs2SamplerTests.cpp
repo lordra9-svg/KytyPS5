@@ -888,6 +888,37 @@ struct RenderRack {
 	}
 };
 
+// Sony's own custom modules pass through the render loop, which ignores them. Their buffers are
+// never read, so buffer ids that are rerouted or past num_buffers must not stop rack creation.
+void TestCustomIgnoredModuleRoutingIsUnused() {
+	RenderSystem render(4);
+	auto&        system = render.Internal();
+	Ngs2RackOptionUnion options {};
+	Ngs2FillDefaultRackOption(0x4002, &options);
+	auto& custom        = options.custom_submixer.custom_rack_option;
+	custom.num_buffers  = 2;
+	custom.num_modules  = 2;
+	custom.module[0]    = {nullptr, 0x31, 3, 0, 3};
+	custom.module[1]    = {nullptr, 0x31, 0, 0, 1};
+	RenderRack rack(system, 0x4002, options.common);
+	Check(rack.handle != 0, "ignored custom module routing stopped the rack");
+}
+
+// MixChannels (0x17) mixes its source buffer in place and never reads a side-chain buffer, so an
+// extra id past num_buffers must not stop rack creation either.
+void TestCustomMixerSideChainIdIsUnused() {
+	RenderSystem render(4);
+	auto&        system = render.Internal();
+	Ngs2RackOptionUnion options {};
+	Ngs2FillDefaultRackOption(0x4002, &options);
+	auto& custom       = options.custom_submixer.custom_rack_option;
+	custom.num_buffers = 2;
+	custom.num_modules = 1;
+	custom.module[0]   = {nullptr, 0x17, 0, 5, 0};
+	RenderRack rack(system, 0x4002, options.common);
+	Check(rack.handle != 0, "unused side-chain buffer id stopped the rack");
+}
+
 void TestPcm16RenderOutput() {
 	RenderSystem render(4);
 	auto&        system = render.Internal();
@@ -4321,6 +4352,8 @@ int main() {
 	TestCustomVoiceStateCapacity();
 	TestSubmixerSetupAndRouting();
 	TestCustomSideChainUserFx();
+	TestCustomIgnoredModuleRoutingIsUnused();
+	TestCustomMixerSideChainIdIsUnused();
 	TestWaveformBlockGeometry();
 	TestResamplerStarvation();
 	TestSamplerReuseResetsRouting();

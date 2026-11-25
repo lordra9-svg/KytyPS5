@@ -1854,10 +1854,18 @@ static void Ngs2InitModules(Ngs2RackInternal& rack) {
 	auto* voices = reinterpret_cast<Ngs2VoiceInternal*>(&rack + 1);
 	for (uint32_t m = 0; m < custom.num_modules; ++m) {
 		const auto& info = custom.module[m];
-		// Modules process their source buffer in place, so skipped modules pass audio through.
-		EXIT_NOT_IMPLEMENTED(info.source_buffer_id != info.dest_buffer_id ||
-		                     std::max(info.source_buffer_id, info.extra_buffer_id) >=
-		                         custom.num_buffers);
+		// Only these modules read a buffer while rendering. Sony's own modules pass through the
+		// render loop, which logs and ignores them, so their routing ids cannot affect the mix
+		// and must not stop rack creation (Rise of the Ronin).
+		if (info.module_id != 0x17 && info.module_id != 0x19 && info.module_id != 0x1f) {
+			continue;
+		}
+		// Modules process their source buffer in place. Only the User FX modules read a
+		// side-chain buffer, from extra_buffer_id.
+		EXIT_NOT_IMPLEMENTED(
+		    info.source_buffer_id != info.dest_buffer_id ||
+		    info.source_buffer_id >= custom.num_buffers ||
+		    (info.module_id != 0x17 && info.extra_buffer_id >= custom.num_buffers));
 		if (info.module_id != 0x1f) {
 			continue;
 		}
