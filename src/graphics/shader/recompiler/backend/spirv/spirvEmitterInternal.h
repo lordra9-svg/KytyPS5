@@ -524,6 +524,7 @@ inline constexpr auto EmitFAbsValue = EmitGlsl<GLSLstd450FAbs, IR::Type::F32, ui
 
 uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits);
 uint32_t EmitF32BitsToF16RtzBits(EmitterState& state, uint32_t bits);
+uint32_t EmitF32BitsToF16RneBits(EmitterState& state, uint32_t bits);
 
 void EmitProgram(EmitterState& state);
 

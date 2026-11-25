@@ -43304,7 +43304,7 @@ template <bool d16, bool sparse> TestCase ImageLoadPackedUnorm() {
                       : std::vector<u32>{0x3f800000u, green, 0u, 0u};
   test.expected.resize(words);
   test.required_spirv = {"OpImageFetch %v4uint", "OpBitFieldUExtract", "OpConvertUToF"};
-  if constexpr (d16) test.required_spirv.emplace_back("PackHalf2x16");
+  if constexpr (d16) test.required_spirv.emplace_back("OpBitFieldInsert");
   test.forbidden_spirv = {"OpTypeSampler", "OpImageGather"};
   return test;
 }
@@ -44187,7 +44187,7 @@ TestCase ImageD16GatherPacksHalfPairs() {
                   O::S_ENDPGM};
   test.sampled_image_rgba = image;
   test.decoded_counts = {{"d16=1", 1}};
-  test.required_spirv = {"OpImageGather", "PackHalf2x16"};
+  test.required_spirv = {"OpImageGather", "OpBitFieldInsert"};
   return test;
 }
 
