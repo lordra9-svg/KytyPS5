@@ -6,8 +6,8 @@ namespace {
 DppTargetLane EmitDppPermTargetLane(EmitterState& state, uint32_t subid, uint32_t control,
                                     uint32_t lane_bits) {
 	// Each lane of a group takes its lane_bits-wide source index from control.
-	const auto lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state), subid,
-	                         ConstantU32(state, (1u << lane_bits) - 1u));
+	const auto lane     = Binary(state, spv::OpBitwiseAnd, TypeU32(state), subid,
+	                             ConstantU32(state, (1u << lane_bits) - 1u));
 	const auto selected = EmitNative<spv::OpBitFieldUExtract, IR::Type::U32>(
 	    state, ConstantU32(state, control),
 	    Binary(state, spv::OpIMul, TypeU32(state), lane, ConstantU32(state, lane_bits)),
@@ -46,10 +46,10 @@ DppTargetLane EmitDppRowShiftTargetLane(EmitterState& state, uint32_t subid, uin
 DppTargetLane EmitDppRowRotateRightTargetLane(EmitterState& state, uint32_t subid,
                                               uint32_t amount) {
 	// Rotation wraps within the row, so only the low four lane bits change.
-	const auto rotated = Binary(state, spv::OpISub, TypeU32(state), subid, ConstantU32(state, amount));
-	return {EmitNative<spv::OpBitFieldInsert, IR::Type::U32>(state, subid, rotated,
-	                                                        ConstantU32(state, 0),
-	                                                        ConstantU32(state, 4)),
+	const auto rotated =
+	    Binary(state, spv::OpISub, TypeU32(state), subid, ConstantU32(state, amount));
+	return {EmitNative<spv::OpBitFieldInsert, IR::Type::U32>(
+	            state, subid, rotated, ConstantU32(state, 0), ConstantU32(state, 4)),
 	        ConstantBool(state, true)};
 }
 
@@ -63,7 +63,7 @@ DppTargetLane EmitDppMirrorTargetLane(EmitterState& state, uint32_t subid, bool 
 } // namespace
 
 DppTargetLane EmitDppTargetLane(EmitterState& state, const IR::DppMoveFlags& flags) {
-	const auto subid = EmitSubgroupLocalInvocationId(state);
+	const auto subid   = EmitSubgroupLocalInvocationId(state);
 	const auto control = flags.control;
 	if (flags.dpp8) {
 		return EmitDppPermTargetLane(state, subid, control, 3u);
@@ -110,6 +110,20 @@ uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value,
 	                          state.subgroup_local_invocation_id_variable);
 	return state.lane_half == 0 ? value : EmitAddU32(state, value, ConstantU32(state, 32));
+}
+
+uint32_t EmitGuestLane(EmitterState& state) {
+	const auto* workgroup = ShaderWorkgroupInput(state.program.stage, state.input_info);
+	const auto  host_size = workgroup != nullptr && workgroup->host_subgroup_size != 0u
+	                            ? workgroup->host_subgroup_size
+	                            : state.program.wave_size;
+	if (host_size <= state.program.wave_size) {
+		// A wider guest wave is emitted as host-sized halves, already numbered past the first.
+		return EmitSubgroupLocalInvocationId(state);
+	}
+	// A wider host subgroup carries several guest waves; number lanes inside the guest wave.
+	return Binary(state, spv::OpBitwiseAnd, TypeU32(state), EmitSubgroupLocalInvocationId(state),
+	              ConstantU32(state, state.program.wave_size - 1u));
 }
 
 uint32_t InputVariableForKind(const EmitterState& state, IR::StageInputKind kind) {
@@ -162,8 +176,8 @@ uint32_t EmitLocalInvocationIndex(EmitterState& state) {
 
 uint32_t EmitVertexParameterComponentU32(EmitterState& state, const InputBinding& input,
                                          uint32_t component) {
-	const auto count = VertexParameterComponentCount(input);
-	const auto kind  = VertexParameterScalarKind(state, input.location);
+	const auto count       = VertexParameterComponentCount(input);
+	const auto kind        = VertexParameterScalarKind(state, input.location);
 	const auto scalar_type = VertexParameterScalarType(state, kind);
 	uint32_t   raw         = state.builder.AllocateId();
 	if (count == 1u) {
