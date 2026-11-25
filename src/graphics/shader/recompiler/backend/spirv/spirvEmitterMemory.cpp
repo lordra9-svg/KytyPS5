@@ -77,8 +77,10 @@ BufferAddress CalculateBufferAddress(EmitterState& state, uint32_t index, uint32
 }
 
 uint32_t BufferLane(EmitterState& state) {
-	return Binary(state, spv::OpBitwiseAnd, TypeU32(state), EmitSubgroupLocalInvocationId(state),
-	              ConstantU32(state, 63));
+	// The guest lane runs inside the host subgroup: a wave32 program on a 64-lane host keeps
+	// both guest waves in one subgroup, while a wave64 program on a 32-lane host splits across
+	// two emissions. The host lane alone is not the guest lane.
+	return EmitGuestLane(state);
 }
 
 uint32_t BufferByteAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
@@ -1592,8 +1594,21 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	    state.lane_count == 2
 	        ? Binary(state, spv::OpBitwiseAnd, TypeU32(state), first, ConstantU32(state, 31))
 	        : first;
-	const auto is_first       = Binary(state, spv::OpIEqual, TypeBool(state),
-	                                   EmitSubgroupLocalInvocationId(state), source_lane);
+	const auto host_lane = EmitSubgroupLocalInvocationId(state);
+	const auto is_first  = Binary(state, spv::OpIEqual, TypeBool(state), EmitGuestLane(state),
+	                              source_lane);
+	// A host subgroup that carries more than one guest wave must broadcast inside its own wave.
+	const auto* workgroup = ShaderWorkgroupInput(state.program.stage, state.input_info);
+	const auto host_size = workgroup != nullptr && workgroup->host_subgroup_size != 0u
+	                           ? workgroup->host_subgroup_size
+	                           : state.program.wave_size;
+	const auto shuffle_lane =
+	    host_size > state.program.wave_size
+	        ? Binary(state, spv::OpBitwiseOr, TypeU32(state),
+	                 Binary(state, spv::OpBitwiseAnd, TypeU32(state), host_lane,
+	                        ConstantU32(state, ~(state.program.wave_size - 1u))),
+	                 source_lane)
+	        : source_lane;
 	auto bounds = EmitMemoryElementInBounds(state, access, index);
 	if (mem.kind == IR::ResourceKind::Gds) {
 		bounds = AndCondition(state, bounds, region_bounds);
@@ -1615,7 +1630,7 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	});
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformShuffle, TypeU32(state), result,
-	                          ConstantU32(state, spv::ScopeSubgroup), atomic, source_lane);
+	                          ConstantU32(state, spv::ScopeSubgroup), atomic, shuffle_lane);
 	return result;
 }
 
