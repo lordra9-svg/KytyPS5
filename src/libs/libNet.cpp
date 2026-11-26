@@ -128,6 +128,10 @@ int KYTY_SYSV_ABI NetShutdown(int s, int how) {
 	return FinishSocketCall(Net::Shutdown(s, how));
 }
 
+int KYTY_SYSV_ABI NetSocketAbort(int s, int flags) {
+	return FinishSocketCall(Net::SocketAbort(s, flags));
+}
+
 int KYTY_SYSV_ABI NetGetsockname(int s, void* addr, uint32_t* addrlen) {
 	return FinishSocketCall(Net::Getsockname(s, addr, addrlen));
 }
@@ -288,6 +292,7 @@ LIB_DEFINE(InitNet_1_Net) {
 	LIB_FUNC("Inp1lfL+Jdw", LibNet::NetEpollDestroy);
 	LIB_FUNC("kOj1HiAGE54", LibNet::NetListen);
 	LIB_FUNC("TSM6whtekok", LibNet::NetShutdown);
+	LIB_FUNC("zJGf8xjFnQE", LibNet::NetSocketAbort);
 	LIB_FUNC("Q4qBuN-c0ZM", LibNet::NetSocket);
 	LIB_FUNC("45ggEzakPJQ", LibNet::NetSocketClose);
 	LIB_FUNC("xphrZusl78E", LibNet::NetGetsockopt);

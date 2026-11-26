@@ -93,6 +93,7 @@ int KYTY_SYSV_ABI         Connect(int s, const void* addr, uint32_t addrlen);
 int KYTY_SYSV_ABI         Listen(int s, int backlog);
 int KYTY_SYSV_ABI         Accept(int s, void* addr, uint32_t* addrlen);
 int KYTY_SYSV_ABI         Shutdown(int s, int how);
+int KYTY_SYSV_ABI         SocketAbort(int s, int flags);
 int KYTY_SYSV_ABI         Getsockname(int s, void* addr, uint32_t* addrlen);
 int KYTY_SYSV_ABI         Getsockopt(int s, int level, int optname, void* optval, uint32_t* optlen);
 int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, uint32_t optlen);

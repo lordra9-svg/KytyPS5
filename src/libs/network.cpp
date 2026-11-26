@@ -2162,6 +2162,38 @@ int KYTY_SYSV_ABI Shutdown(int s, int how) {
 	return 0;
 }
 
+int KYTY_SYSV_ABI SocketAbort(int s, int flags) {
+	PRINT_NAME();
+
+	LOGF("\t s     = %d\n"
+	     "\t flags = 0x%08x\n",
+	     s, flags);
+
+	NativeSocket                    socket = INVALID_NATIVE_SOCKET;
+	std::shared_ptr<SocketTransport> transport;
+	if (!GetSocketBackend(s, &socket, nullptr, &transport)) {
+		return -1;
+	}
+
+	// Bit 0 preserves receive, bit 1 preserves send.
+	const bool preserve_receive = (flags & 1) != 0;
+	const bool preserve_send    = (flags & 2) != 0;
+	if (!preserve_receive || !preserve_send) {
+		const int how = preserve_receive ? 1 : (preserve_send ? 0 : 2);
+		// An unconnected socket cannot have a direction shut; the abort still succeeds.
+		::shutdown(socket, how);
+#if defined(_WIN32)
+		if (!preserve_receive) {
+			transport->receive_shutdown.store(true, std::memory_order_relaxed);
+		}
+#endif
+	}
+#if !defined(_WIN32)
+	(void)transport;
+#endif
+	return 0;
+}
+
 int KYTY_SYSV_ABI Getsockname(int s, void* addr, uint32_t* addrlen) {
 	PRINT_NAME();
 

@@ -67,6 +67,7 @@ void InitAmpr_1(Loader::SymbolDatabase *symbols);
 
 namespace Libs::LibNet {
 void InitNet_1_Net(Loader::SymbolDatabase *symbols);
+int KYTY_SYSV_ABI NetSocketAbort(int s, int flags);
 }
 
 namespace Libs::LibNpWebApi2 {
@@ -2265,6 +2266,36 @@ std::array<int, 2> CreateTcpPair() {
   return {reader, writer};
 }
 
+void CheckSocketAbort() {
+  namespace Net = Libs::Network::Net;
+  Loader::SymbolDatabase symbols;
+  Libs::LibNet::InitNet_1_Net(&symbols);
+  const auto* exported = symbols.Find(
+      {"zJGf8xjFnQE", "libSceNet", "libSceNet", Loader::SymbolType::Func});
+  Check(exported != nullptr &&
+            exported->vaddr ==
+                reinterpret_cast<uint64_t>(&Libs::LibNet::NetSocketAbort),
+        "sceNetSocketAbort export resolves");
+  const auto [reader, writer] = CreateTcpPair();
+  char byte = 0;
+  Check(Net::SocketAbort(reader, 1) == 0, "abort the socket send direction");
+  Check(Net::Send(writer, "y", 1, 0) == 1 &&
+            Net::Recv(reader, &byte, 1, 0) == 1 && byte == 'y',
+        "aborting send preserves receive");
+  Check(Net::SocketAbort(reader, 2) == 0,
+        "abort the socket receive direction");
+  const int aborted = Net::Recv(reader, &byte, 1, 0);
+  Check(aborted == 0 ||
+            (aborted == -1 &&
+             *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_ESHUTDOWN),
+        "aborting receive ends a later receive");
+  Check(Net::SocketAbort(-1, 0) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+        "aborting an invalid descriptor reports EBADF");
+  Check(Net::SocketClose(reader) == 0 && Net::SocketClose(writer) == 0,
+        "close socket abort fixture");
+}
+
 #if defined(_WIN32)
 void CheckSocketReceiveConcurrency() {
   namespace Net = Libs::Network::Net;
@@ -3216,6 +3247,7 @@ int main(int argc, char** argv) {
   CheckSaveRename(temporary.Path(), "replacement-save");
   TestPosixRename(temporary.Path());
   CheckSocketWakeup();
+  CheckSocketAbort();
   FileSystem::Shutdown();
   CheckEtherAddressFormatting();
 #if defined(__linux__)
