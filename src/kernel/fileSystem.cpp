@@ -29,6 +29,12 @@
 #include <system_error>
 #include <vector>
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#include <sys/utime.h>
+#else
+#include <sys/time.h>
+#endif
+
 namespace Libs::LibKernel::FileSystem {
 
 LIB_NAME("libkernel", "libkernel");
@@ -1447,6 +1453,70 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	}
 
 	LOGF("\tKernelRename: %s -> %s\n", from, to);
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI KernelUtimes(const char* path, const KernelTimeval* times) {
+	PRINT_NAME();
+
+	// FreeBSD validates the microseconds before it resolves the path.
+	if (times != nullptr && (times[0].tv_usec < 0 || times[0].tv_usec >= 1000000 ||
+	                         times[1].tv_usec < 0 || times[1].tv_usec >= 1000000)) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	if (path == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
+	if (path[0] == '\0') {
+		return KERNEL_ERROR_ENOENT;
+	}
+
+	bool       read_only = false;
+	const auto real_name = g_mount_points->ResolvePath(path, &read_only);
+	if (real_name.empty()) {
+		return KERNEL_ERROR_ENOENT;
+	}
+	if (read_only) {
+		return KERNEL_ERROR_EROFS;
+	}
+
+	int result = 0;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	struct _utimbuf  values {};
+	struct _utimbuf* native_times = nullptr;
+	if (times != nullptr) {
+		values.actime  = static_cast<time_t>(times[0].tv_sec);
+		values.modtime = static_cast<time_t>(times[1].tv_sec);
+		native_times   = &values;
+	}
+	result = ::_wutime(real_name.wstring().c_str(), native_times);
+#else
+	struct timeval        values[2] {};
+	const struct timeval* native_times = nullptr;
+	if (times != nullptr) {
+		values[0] = {static_cast<time_t>(times[0].tv_sec),
+		             static_cast<suseconds_t>(times[0].tv_usec)};
+		values[1] = {static_cast<time_t>(times[1].tv_sec),
+		             static_cast<suseconds_t>(times[1].tv_usec)};
+		native_times = values;
+	}
+	result = ::utimes(real_name.c_str(), native_times);
+#endif
+	if (result != 0) {
+		switch (static_cast<std::errc>(
+		    std::error_code(errno, std::generic_category()).default_error_condition().value())) {
+			case std::errc::no_such_file_or_directory: return KERNEL_ERROR_ENOENT;
+			case std::errc::not_a_directory: return KERNEL_ERROR_ENOTDIR;
+			case std::errc::permission_denied: return KERNEL_ERROR_EACCES;
+			case std::errc::read_only_file_system: return KERNEL_ERROR_EROFS;
+			case std::errc::invalid_argument: return KERNEL_ERROR_EINVAL;
+			case std::errc::filename_too_long: return KERNEL_ERROR_ENAMETOOLONG;
+			default: return KERNEL_ERROR_EIO;
+		}
+	}
+
+	LOGF("\tKernelUtimes: %s\n", Common::PathToString(real_name).c_str());
 
 	return OK;
 }
