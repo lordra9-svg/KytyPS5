@@ -335,7 +335,10 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 #endif
 
 	if (f.added) {
-		auto* pad = SDL_OpenGamepad(f.id);
+		auto* pad = SDL_GetGamepadFromID(f.id);
+		if (pad == nullptr) {
+			pad = SDL_OpenGamepad(f.id);
+		}
 		if (pad == nullptr) {
 			LOGF("Controller: ignoring gamepad %d that could not be opened: %s\n", f.id,
 			     SDL_GetError());
@@ -781,6 +784,26 @@ void WindowContext::Run() {
 	}
 }
 
+// Register gamepads that were already connected when the gamepad subsystem started. SDL also
+// queues an added event for each, but the guest can open a pad before the event loop runs.
+static void ConnectInitialGamepads() {
+	int             count = 0;
+	SDL_JoystickID* ids   = SDL_GetGamepads(&count);
+	if (ids == nullptr) {
+		return;
+	}
+	for (int i = 0; i < count; i++) {
+		auto* pad = SDL_GetGamepadFromID(ids[i]);
+		if (pad == nullptr) {
+			pad = SDL_OpenGamepad(ids[i]);
+		}
+		if (pad != nullptr) {
+			Controller::Connect(SDL_GetJoystickID(SDL_GetGamepadJoystick(pad)));
+		}
+	}
+	SDL_free(ids);
+}
+
 static void WindowCreate(WindowContext& context) {
 	EXIT_IF(context.window != nullptr);
 	EXIT_IF(context.graphic_ctx.screen_width == 0);
@@ -798,6 +821,8 @@ static void WindowCreate(WindowContext& context) {
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
 	}
+
+	ConnectInitialGamepads();
 
 	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
 
