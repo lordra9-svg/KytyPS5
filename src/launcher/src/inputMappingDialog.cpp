@@ -70,7 +70,7 @@ constexpr PadControl PAD_CONTROLS[] = {
     {"Options", "Options", "Return", "Start", System},
     {"TouchPad", "Touch pad click", "Backspace", "Touchpad", System},
     {"TouchPadRight", "Touch pad right", "Tab", nullptr, System},
-    {"GyroToggle", "Gyro emulation toggle", "", "Back", System},
+    {"GyroToggle", "Gyro emulation toggle", "", nullptr, System},
     {"TouchPadMode", "Emulated touch pad mode", "F6", "", System},
     {"TouchPadSwipeUp", "Touch pad swipe up", "", nullptr, System},
     {"TouchPadSwipeDown", "Touch pad swipe down", "", nullptr, System},
@@ -549,7 +549,7 @@ QWidget* InputMappingDialog::BuildTab(bool pad) {
 		        });
 		auto* note = new QLabel(tr("The gyro emulation toggle activates tilt mode on gamepads "
 		                           "without a gyroscope: the right stick then controls pitch and "
-		                           "roll. It defaults to the View/Back button."),
+		                           "roll. It is unbound by default; assign it to a button here."),
 		                        page);
 		note->setWordWrap(true);
 		layout->addWidget(note);
