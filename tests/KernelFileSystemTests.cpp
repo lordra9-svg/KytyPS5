@@ -952,6 +952,49 @@ void TestStatTimes() {
   Check(FileSystem::KernelClose(fd) == OK, "close stat time fixture");
 }
 
+void TestUtimes() {
+  namespace Kernel = Libs::LibKernel;
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto* symbol = symbols.Find(
+      {"0Cq8ipKr9n0", "libkernel", "libkernel", Loader::SymbolType::Func});
+  Check(symbol != nullptr, "sceKernelUtimes export resolves");
+  const auto utimes = reinterpret_cast<int (KYTY_SYSV_ABI *)(
+      const char*, const Kernel::KernelTimeval *)>(symbol->vaddr);
+
+  constexpr char Path[] = "/savedata0/utimes-save.dat";
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3 && FileSystem::KernelClose(fd) == OK, "create utimes fixture");
+
+  const Kernel::KernelTimeval times[2] {{1600000000, 0}, {1700000000, 0}};
+  FileSystem::FileStat stat {};
+  Check(utimes(Path, times) == OK && FileSystem::KernelStat(Path, &stat) == OK &&
+            stat.st_atim.tv_sec == 1600000000 &&
+            stat.st_mtim.tv_sec == 1700000000,
+        "sceKernelUtimes sets access and modification times");
+
+  SetUnixWriteTime(FileSystem::GetRealFilename(Path), 1600000000000000000);
+  Check(FileSystem::KernelStat(Path, &stat) == OK &&
+            stat.st_mtim.tv_sec == 1600000000,
+        "reset utimes modification time");
+  Check(utimes(Path, nullptr) == OK && FileSystem::KernelStat(Path, &stat) == OK &&
+            stat.st_mtim.tv_sec > 1600000000,
+        "sceKernelUtimes without times uses the current time");
+
+  const Kernel::KernelTimeval invalid[2] {{1700000000, -1}, {1700000000, 0}};
+  const Kernel::KernelTimeval invalid_high[2] {{1700000000, 1000000},
+                                                {1700000000, 0}};
+  Check(utimes(Path, invalid) == Kernel::KERNEL_ERROR_EINVAL &&
+            utimes(Path, invalid_high) == Kernel::KERNEL_ERROR_EINVAL,
+        "sceKernelUtimes rejects out-of-range microseconds");
+  Check(utimes(nullptr, nullptr) == Kernel::KERNEL_ERROR_EFAULT &&
+            utimes("", nullptr) == Kernel::KERNEL_ERROR_ENOENT &&
+            utimes("/unmapped/utimes.dat", nullptr) ==
+                Kernel::KERNEL_ERROR_ENOENT,
+        "sceKernelUtimes reports null, empty and unmapped paths");
+  Check(FileSystem::KernelUnlink(Path) == OK, "remove utimes fixture");
+}
+
 void TestFsync() {
   Loader::SymbolDatabase symbols;
   Libs::InitLibKernel_1(&symbols);
@@ -3157,6 +3200,7 @@ int main(int argc, char** argv) {
   FileSystem::Mount(temporary.Path(), "/savedata0");
   TestSaveOpenVisibility();
   TestStatTimes();
+  TestUtimes();
   TestFsync();
   TestSaveTruncate();
   TestSaveWritev();
