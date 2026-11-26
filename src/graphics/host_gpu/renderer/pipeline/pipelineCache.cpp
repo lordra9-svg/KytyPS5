@@ -28,10 +28,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <limits>
 #include <ranges>
+#include <set>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
 #include <utility>
@@ -107,6 +109,30 @@ void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
 	auto message = fmt::format(format, std::forward<Args>(args)...);
 	message += '\n';
 	Log::WriteToConsoleAndLog(message);
+}
+
+// Probe-only workaround for a compute shader that hangs the GPU after a skipped GPU-selected
+// callable dispatch. KYTY_SKIP_COMPUTE takes comma-separated guest shader hashes.
+static bool SkipComputeHash(uint64_t hash) {
+	const char* list = std::getenv("KYTY_SKIP_COMPUTE");
+	if (list == nullptr) {
+		return false;
+	}
+	while (*list != '\0') {
+		char*      end   = nullptr;
+		const auto value = std::strtoull(list, &end, 16);
+		if (end == list) {
+			break;
+		}
+		if (value == hash) {
+			return true;
+		}
+		list = end;
+		while (*list == ',' || *list == ';' || *list == ' ') {
+			list++;
+		}
+	}
+	return false;
 }
 
 bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) {
@@ -814,6 +840,13 @@ const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo
                                                      ShaderComputeInputInfo&      input_info) {
 	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
 	const auto        params      = PrepareProgram(regs, input_info);
+	if (SkipComputeHash(params.hash)) {
+		static std::set<uint64_t> reported;
+		if (reported.insert(params.hash).second) {
+			PipelineCacheLog("!!! PROBE COMPUTE SKIP !!! shader=0x{:016x}", params.hash);
+		}
+		return nullptr;
+	}
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
 	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize;
 	ShaderRecompiler::IR::PushData::Window push_data;
