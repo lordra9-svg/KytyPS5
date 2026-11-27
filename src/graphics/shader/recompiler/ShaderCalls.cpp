@@ -22,6 +22,85 @@
 
 namespace Libs::Graphics::ShaderRecompiler {
 
+constexpr uint64_t MaxTableBytes   = uint64_t {64} << 20u;
+constexpr uint64_t TableChunkBytes = uint64_t {1} << 20u;
+constexpr uint32_t MaxTableCallees = 64u;
+
+// Folds an expression of U32 immediates (the translator masks shift counts with BitwiseAnd, and
+// constant propagation has not run yet when call targets are prepared).
+std::optional<uint32_t> ConstantU32(IR::Value value, uint32_t depth = 0) {
+	using namespace IR;
+	value = value.Resolve();
+	if (value.IsImmediate()) {
+		if (value.GetType() != Type::U32) return std::nullopt;
+		return value.U32();
+	}
+	const auto* inst = value.TryInstruction();
+	if (inst == nullptr || depth > 4u || inst->NumArgs() != 2u) return std::nullopt;
+	const auto a = ConstantU32(inst->Arg(0), depth + 1u);
+	const auto b = ConstantU32(inst->Arg(1), depth + 1u);
+	if (!a || !b) return std::nullopt;
+	switch (inst->GetOpcode()) {
+		case ValueOpcode::BitwiseAnd32: return *a & *b;
+		case ValueOpcode::IAdd32: return *a + *b;
+		case ValueOpcode::IMul32: return *a * *b;
+		case ValueOpcode::ShiftLeftLogical32: return *b < 32u ? *a << *b : 0u;
+		default: return std::nullopt;
+	}
+}
+
+// Recognizes a call target pair read as ReadConstBuffer(V#, index * stride) + immediate from one
+// runtime-evaluable buffer descriptor: a function table selected by a GPU value.
+std::optional<ShaderSource::Call::Table> MatchCallTable(const IR::Program& query,
+                                                        const std::array<const IR::Inst*, 2>& reads) {
+	using namespace IR;
+	if (reads[0] == nullptr || reads[1] == nullptr) return std::nullopt;
+	const auto* handle = reads[0]->Arg(0).ResolveInstruction();
+	if (handle == nullptr || handle->NumArgs() != 4u ||
+	    reads[1]->Arg(0).ResolveInstruction() != handle ||
+	    reads[0]->Arg(1).Resolve() != reads[1]->Arg(1).Resolve())
+		return std::nullopt;
+	ShaderSource::Call::Table table;
+	for (uint32_t i = 0; i < 4u; ++i) {
+		const auto word = handle->Arg(i).Resolve();
+		if (!ValidateRuntimeValue(query, word, RuntimeValueType::Integer)) return std::nullopt;
+		table.descriptor[i] = word;
+	}
+	auto     offset   = reads[0]->Arg(1).Resolve();
+	uint32_t constant = 0;
+	if (const auto* add = offset.TryInstruction();
+	    add != nullptr && add->GetOpcode() == ValueOpcode::IAdd32) {
+		if (const auto b = ConstantU32(add->Arg(1))) {
+			constant = *b;
+			offset   = add->Arg(0).Resolve();
+		} else if (const auto a = ConstantU32(add->Arg(0))) {
+			constant = *a;
+			offset   = add->Arg(1).Resolve();
+		}
+	}
+	const auto* scale = offset.TryInstruction();
+	if (scale == nullptr || scale->NumArgs() != 2u) return std::nullopt;
+	const auto amount = ConstantU32(scale->Arg(1));
+	if (!amount) return std::nullopt;
+	if (scale->GetOpcode() == ValueOpcode::ShiftLeftLogical32 && *amount >= 2u && *amount < 16u) {
+		table.stride = 1u << *amount;
+	} else if (scale->GetOpcode() == ValueOpcode::IMul32 && *amount >= 8u && *amount <= 0x10000u &&
+	           *amount % 4u == 0u) {
+		table.stride = *amount;
+	} else {
+		return std::nullopt;
+	}
+	std::array<uint32_t, 2> position {};
+	for (uint32_t i = 0; i < 2u; ++i) {
+		const auto index = reads[i]->Flags<MemoryFlags>().index;
+		if (index >= query.memory_info.size()) return std::nullopt;
+		position[i] = (query.memory_info[index].offset & ~3u) + (constant & ~3u);
+	}
+	if (position[1] != position[0] + 4u || position[1] + 4u > table.stride) return std::nullopt;
+	table.low_offset = position[0];
+	return table;
+}
+
 void PrepareCallTargets(ShaderSource& source, const CompileOptions& options) {
 	using namespace IR;
 	EXIT_NOT_IMPLEMENTED(options.stage != ShaderType::Compute);
