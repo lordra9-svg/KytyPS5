@@ -28,10 +28,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <limits>
 #include <ranges>
+#include <set>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
 #include <utility>
@@ -111,6 +113,30 @@ void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
 	Log::WriteToConsoleAndLog(message);
 }
 
+// Probe-only workaround for the Returnal compute shader that hangs RADV after a skipped
+// GPU-selected callable dispatch. KYTY_SKIP_COMPUTE takes comma-separated guest shader hashes.
+bool SkipComputeHash(uint64_t hash) {
+	const char* list = std::getenv("KYTY_SKIP_COMPUTE");
+	if (list == nullptr) {
+		return false;
+	}
+	while (*list != '\0') {
+		char*      end   = nullptr;
+		const auto value = std::strtoull(list, &end, 16);
+		if (end == list) {
+			break;
+		}
+		if (value == hash) {
+			return true;
+		}
+		list = end;
+		while (*list == ',' || *list == ';' || *list == ' ') {
+			list++;
+		}
+	}
+	return false;
+}
+
 bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) {
 	// Scalar and unformatted buffer dependencies use the same backing as native raw loads.
 	// Image synchronization belongs to formatted buffer bindings, not these reads.
@@ -167,10 +193,12 @@ void ValidateShaderSpirv(const char* stage, uint64_t shader_hash,
 } // namespace
 
 ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
-	// AMD GPUs (vendor 0x1002) run NMin/NMax as v_min/v_max, which give the guest's NaN and
-	// signed-zero results; GLSL.std.450 alone does not order -0 below +0.
+	// AMD's own drivers run NMin/NMax as v_min/v_max, which give the guest's NaN and signed-zero
+	// results; Mesa's RADV implements the GLSL.std.450 semantics instead, so it keeps the ordered
+	// compare. GLSL.std.450 alone does not order -0 below +0.
 	return {.maintenance8           = graphics.maintenance8_enabled,
-	        .native_float_min_max   = graphics.physical_device_properties.vendorID == 0x1002u,
+	        .native_float_min_max   = graphics.physical_device_properties.vendorID == 0x1002u &&
+	                                  graphics.driver_id != vk::DriverId::eMesaRadv,
 	        .device_clock_period_ps = graphics.device_clock_period_ps,
 	        .robust_buffer_access   = graphics.robust_buffer_access_enabled,
 	        .r8_srgb_views          = graphics.r8_srgb_views,
@@ -844,6 +872,13 @@ const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo
                                                      ShaderComputeInputInfo&      input_info) {
 	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
 	const auto        params      = PrepareProgram(regs, input_info);
+	if (SkipComputeHash(params.hash)) {
+		static std::set<uint64_t> reported;
+		if (reported.insert(params.hash).second) {
+			PipelineCacheLog("!!! PROBE COMPUTE SKIP !!! shader=0x{:016x}", params.hash);
+		}
+		return nullptr;
+	}
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
 	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize;
 	ShaderRecompiler::IR::PushData::Window push_data;

@@ -127,7 +127,8 @@ constexpr std::array PAD_DEFAULTS = {
     PadDefault {"R2", "RightTrigger"},     PadDefault {"Up", "DpadUp"},
     PadDefault {"Down", "DpadDown"},       PadDefault {"Left", "DpadLeft"},
     PadDefault {"Right", "DpadRight"},     PadDefault {"TouchPad", "Touchpad"},
-    PadDefault {"GyroToggle", "Back"},
+    // GyroToggle is intentionally unbound. Games ignore Select/Back, and binding the toggle
+    // there makes one press silently redirect the right stick to tilt control in every game.
 };
 
 constexpr std::string_view PAD_PREFIX = "Pad:";

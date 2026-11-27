@@ -117,6 +117,64 @@ uint32_t EmitF32BitsToF16RtzBits(EmitterState& state, uint32_t bits) {
 	return EmitOrU32(state, sign, magnitude);
 }
 
+uint32_t EmitF32BitsToF16RneBits(EmitterState& state, uint32_t bits) {
+	const auto abs  = EmitAndConstant(state, bits, 0x7fffffffu);
+	const auto sign = EmitAndConstant(
+	    state, Binary(state, spv::OpShiftRightLogical, TypeU32(state), bits, ConstantU32(state, 16)),
+	    0x8000u);
+	const auto exp = Binary(state, spv::OpShiftRightLogical, TypeU32(state), abs,
+	                        ConstantU32(state, 23));
+	const auto mant = EmitAndConstant(state, abs, 0x007fffffu);
+
+	// Half subnormals shift the hidden bit right by 126 - exp and round the remainder to
+	// nearest even. This branch only runs below 2^-14, so the shift is 14 or more; the helper
+	// still clamps the shift so no dynamic shift count is out of range.
+	const auto shift = EmitUMin32(
+	    state, Binary(state, spv::OpISub, TypeU32(state), ConstantU32(state, 126), exp),
+	    ConstantU32(state, 31));
+	const auto aligned = EmitOrU32(state, mant, ConstantU32(state, 0x00800000u));
+	const auto half = EmitUMin32(
+	    state,
+	    Binary(state, spv::OpISub, TypeU32(state), shift, ConstantU32(state, 1)),
+	    ConstantU32(state, 30));
+	const auto bias = Binary(state, spv::OpISub, TypeU32(state),
+	                         Binary(state, spv::OpShiftLeftLogical, TypeU32(state),
+	                                ConstantU32(state, 1), half),
+	                         ConstantU32(state, 1));
+	const auto keep = EmitAndConstant(
+	    state, Binary(state, spv::OpShiftRightLogical, TypeU32(state), aligned, shift), 1u);
+	const auto sub = Binary(state, spv::OpShiftRightLogical, TypeU32(state),
+	                        Binary(state, spv::OpIAdd, TypeU32(state),
+	                               Binary(state, spv::OpIAdd, TypeU32(state), aligned, bias), keep),
+	                        shift);
+
+	// Normal halves round the dropped 13 mantissa bits to nearest even before rebias.
+	const auto truncated = Binary(
+	    state, spv::OpShiftRightLogical, TypeU32(state),
+	    Binary(state, spv::OpIAdd, TypeU32(state),
+	           Binary(state, spv::OpIAdd, TypeU32(state), abs, ConstantU32(state, 0x0fffu)),
+	           EmitAndConstant(
+	               state, Binary(state, spv::OpShiftRightLogical, TypeU32(state), abs,
+	                             ConstantU32(state, 13)),
+	               1u)),
+	    ConstantU32(state, 13));
+	const auto normal = EmitUMin32(
+	    state, Binary(state, spv::OpISub, TypeU32(state), truncated, ConstantU32(state, 0x1c000u)),
+	    ConstantU32(state, 0x7bffu));
+	const auto finite = Select(state, TypeU32(state),
+	                           EmitCompareU32Constant(state, spv::OpULessThan, abs, 0x38800000u),
+	                           sub, normal);
+	const auto nan = EmitOrU32(state, EmitAndConstant(state, truncated, 0x03ffu),
+	                           ConstantU32(state, 0x7e00u));
+	const auto special = Select(state, TypeU32(state),
+	                            EmitCompareU32Constant(state, spv::OpIEqual, mant, 0),
+	                            ConstantU32(state, 0x7c00u), nan);
+	const auto magnitude = Select(
+	    state, TypeU32(state),
+	    EmitCompareU32Constant(state, spv::OpUGreaterThanEqual, abs, 0x7f800000u), special, finite);
+	return EmitOrU32(state, sign, magnitude);
+}
+
 uint32_t EmitFPFma32(EmitterState& state, uint32_t a, uint32_t b, uint32_t c) {
 	const auto result = EmitGlsl<GLSLstd450Fma, IR::Type::F32>(state, a, b, c);
 	state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);
@@ -278,7 +336,43 @@ uint32_t EmitFPRecip32(EmitterState& state, uint32_t arg0) {
 
 uint32_t EmitFPRecip64(EmitterState& state, uint32_t arg0) {
 	const auto one = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3ff00000u);
-	return EmitNative<spv::OpFDiv, IR::Type::F64>(state, one, arg0);
+	// Some drivers flush an f64 denormal divisor or quotient in FDiv even when the module asks
+	// for DenormPreserve. The scale factors are exact powers of two, so moving a denormal
+	// divisor, or a divisor whose reciprocal is denormal, into the normal range and undoing the
+	// scale afterwards only rounds when the final result lands in the denormal range.
+	const auto bits      = Unary(state, spv::OpBitcast, TypeU64(state), arg0);
+	const auto magnitude = Binary(state, spv::OpBitwiseAnd, TypeU64(state), bits,
+	                              ConstantU64(state, 0x7fffffffffffffffull));
+	const auto exponent  = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
+	                              Binary(state, spv::OpShiftRightLogical, TypeU64(state), magnitude,
+	                                     ConstantU64(state, 52)),
+	                              ConstantU64(state, 0x7ffu));
+	const auto mantissa  = Binary(state, spv::OpBitwiseAnd, TypeU64(state), magnitude,
+	                              ConstantU64(state, 0x000fffffffffffffull));
+	const auto is_denormal =
+	    Binary(state, spv::OpLogicalAnd, TypeBool(state),
+	           Binary(state, spv::OpIEqual, TypeBool(state), exponent, ConstantU64(state, 0)),
+	           Binary(state, spv::OpINotEqual, TypeBool(state), mantissa, ConstantU64(state, 0)));
+	// A finite divisor above 2^1022 has a reciprocal below the smallest normal.
+	const auto is_large =
+	    Binary(state, spv::OpLogicalAnd, TypeBool(state),
+	           Binary(state, spv::OpULessThan, TypeBool(state), exponent,
+	                  ConstantU64(state, 0x7ffu)),
+	           Binary(state, spv::OpUGreaterThan, TypeBool(state), magnitude,
+	                  ConstantU64(state, 0x7fd0000000000000ull)));
+	const auto up   = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x43500000u);
+	const auto down = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3c900000u);
+	const auto scale_in =
+	    Select(state, TypeF64(state), is_denormal,
+	           EmitNative<spv::OpFMul, IR::Type::F64>(state, arg0, up),
+	           Select(state, TypeF64(state), is_large,
+	                  EmitNative<spv::OpFMul, IR::Type::F64>(state, arg0, down), arg0));
+	const auto quotient = EmitNative<spv::OpFDiv, IR::Type::F64>(state, one, scale_in);
+	return Select(state, TypeF64(state), is_denormal,
+	              EmitNative<spv::OpFMul, IR::Type::F64>(state, quotient, up),
+	              Select(state, TypeF64(state), is_large,
+	                     EmitNative<spv::OpFMul, IR::Type::F64>(state, quotient, down),
+	                     quotient));
 }
 
 uint32_t EmitFPRecipIFlag32(EmitterState& state, uint32_t arg0) {
