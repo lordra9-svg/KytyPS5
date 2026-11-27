@@ -37,6 +37,21 @@
 
 namespace Libs::LibKernel::FileSystem {
 
+namespace {
+// PROBE: trace reads of Wwise streams to see where a cutscene stream stalls.
+void ProbeWemRead(const Common::File& file, const std::filesystem::path& name, uint64_t offset,
+                  size_t nbytes, uint32_t bytes_read) {
+	if (Common::PathToString(name).find("wwiseaudio") == std::string::npos) return;
+	static uint64_t reads = 0;
+	const bool      short_read = bytes_read != nbytes;
+	if (!short_read && (++reads % 64u) != 0u) return;
+	LOGF("PROBE wem read: off=0x%llx size=%zu got=%u short=%d file=%s\n",
+	     static_cast<unsigned long long>(offset), nbytes, bytes_read, short_read ? 1 : 0,
+	     Common::PathToString(name).c_str());
+}
+} // namespace
+
+
 LIB_NAME("libkernel", "libkernel");
 
 using Descriptors::DESCRIPTOR_MIN;
@@ -720,6 +735,7 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	uint32_t bytes_read = 0;
 	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileReadBytes, bytes_read);
+	ProbeWemRead(file->f, file->real_name, pos, nbytes, bytes_read);
 
 	file->mutex.Unlock();
 
@@ -848,6 +864,7 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 	file->f.Seek(offset);
 	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::GuestFileReadBytes, bytes_read);
+	ProbeWemRead(file->f, file->real_name, static_cast<uint64_t>(offset), nbytes, bytes_read);
 	file->f.Seek(pos);
 
 	file->mutex.Unlock();
