@@ -357,6 +357,15 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	BuildStageStaticKey(input_info, m_lookup_key.static_state);
 	auto entry = m_program_cache.find(m_lookup_key);
 	const auto bind = [&](const ShaderModule& module) {
+		if (entry != m_program_cache.end() && entry->second.call_source != nullptr) {
+			static uint64_t linked_dispatches = 0;
+			const auto     n = ++linked_dispatches;
+			if (n <= 32 || (n % 100u) == 0u) {
+				LOGF("PROBE linked dispatch #%llu hash=0x%016" PRIx64 " stage=%s\n",
+				     static_cast<unsigned long long>(n), params.hash,
+				     ShaderRecompiler::StageName(options.stage));
+			}
+		}
 		input_info.stage = {.module = &module, .resources = &entry->second.resources};
 		module.info.bindings.AdvancePushData(push_data, module.info.stage);
 		return &module;
