@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <map>
@@ -375,6 +376,14 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 						EXIT("shader call at pc 0x%08x: function table has over %u callees", pc, MaxTableCallees);
 				}
 			}
+			// A table with no live entry means the buffer read at pipeline-build time was empty
+			// (typically GPU-written or not uploaded yet). Running the shader would skip the call
+			// and break its control flow, so fall back to the old dispatch-skip behavior.
+			if (site.table_targets.empty()) {
+				LOGF("shader call at pc 0x%08x: function table is empty; skipping the dispatch\n", pc);
+				source.unsupported_call_pc = pc;
+				return source.decoded;
+			}
 			site.address = 0;
 			continue;
 		}
@@ -523,8 +532,10 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 	for (const auto& site: source.calls) {
 		const auto& call = source.decoded.instructions[site.instruction];
 		const auto return_pc = call.pc + call.word_count * static_cast<uint32_t>(sizeof(uint32_t));
-		if (!site.table) {
-			linked.decoded.instructions[site.instruction].branch_target = append_body(site, site.address, return_pc);
+		// A table with one live entry always selects that callee, so link it like a plain call.
+		if (!site.table || site.table_targets.size() == 1u) {
+			const auto address = site.table ? site.table_targets.front() & ~uint64_t {3} : site.address;
+			linked.decoded.instructions[site.instruction].branch_target = append_body(site, address, return_pc);
 			continue;
 		}
 		// Dispatcher, appended after the caller, followed by one body per target:
@@ -613,6 +624,27 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 
 	source.linked = std::move(linked);
 	++source.revision;
+	// PROBE: dump the linked program and table geometry for offline analysis.
+	if (std::ranges::any_of(source.calls, [](const auto& call) { return call.table.has_value(); })) {
+		if (auto* file = std::fopen("_Build/table-linked.txt", "w")) {
+			std::fprintf(file, "calls=%zu revision=%llu native_bytes=%u\n", source.calls.size(),
+			             static_cast<unsigned long long>(source.revision),
+			             source.linked->decoded.native_bytes);
+			for (const auto& call: source.calls) {
+				std::fprintf(file, "call pc=0x%x table=%d address=0x%llx targets=%zu\n",
+				             source.decoded.instructions[call.instruction].pc,
+				             call.table.has_value() ? 1 : 0,
+				             static_cast<unsigned long long>(call.address), call.table_targets.size());
+				for (const auto target: call.table_targets)
+					std::fprintf(file, "  target=0x%llx\n", static_cast<unsigned long long>(target));
+				if (call.table)
+					std::fprintf(file, "  stride=%u low=%u\n", call.table->stride, call.table->low_offset);
+			}
+			const auto text = Decoder::ProgramToString(source.linked->decoded);
+			std::fwrite(text.data(), 1, text.size(), file);
+			std::fclose(file);
+		}
+	}
 	return source.linked->decoded;
 }
 

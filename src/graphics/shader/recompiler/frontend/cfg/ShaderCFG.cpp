@@ -1694,47 +1694,6 @@ bool MayWriteScalarRegister(const Decoder::Instruction& inst, uint32_t code, uin
 	return InstructionWritesScalarCode(inst, code);
 }
 
-std::optional<uint32_t> FindScalarDefinition(const Decoder::Program& program, const Graph& graph,
-                                             uint32_t before, uint32_t code, uint32_t wave_size,
-                                             std::vector<uint32_t>& crossed_calls) {
-	EXIT_IF(before >= program.instructions.size());
-	const auto found = std::ranges::find_if(graph.blocks, [before](const auto& block) {
-		return block.inst_begin <= before && before < block.inst_end;
-	});
-	EXIT_IF(found == graph.blocks.end());
-	std::vector<std::pair<uint32_t, uint32_t>> pending {{found->id, before}};
-	std::set<std::pair<uint32_t, uint32_t>> visited;
-	std::optional<uint32_t> definition;
-	while (!pending.empty()) {
-		const auto point = pending.back();
-		pending.pop_back();
-		if (!visited.insert(point).second) continue;
-		const auto* block = graph.FindBlock(point.first);
-		EXIT_IF(block == nullptr);
-		uint32_t index = UINT32_MAX;
-		for (uint32_t i = point.second; i > block->inst_begin;) {
-			const auto& inst = program.instructions[--i];
-			if (inst.opcode == Opcode::S_SWAPPC_B64) {
-				EXIT_NOT_IMPLEMENTED(MayWriteScalarRegister(inst, code, wave_size));
-				crossed_calls.push_back(i);
-				continue;
-			}
-			if (MayWriteScalarRegister(inst, code, wave_size)) { index = i; break; }
-		}
-		if (index != UINT32_MAX || block->id == graph.entry_block) {
-			if (definition && *definition != index) return std::nullopt;
-			definition = index;
-			continue;
-		}
-		EXIT_IF(block->predecessors.empty());
-		for (const auto predecessor: block->predecessors) {
-			pending.emplace_back(predecessor, graph.blocks[predecessor].inst_end);
-		}
-	}
-	EXIT_IF(!definition);
-	return definition;
-}
-
 std::vector<uint32_t> FindScalarDefinitions(const Decoder::Program& program, const Graph& graph,
                                             uint32_t before, uint32_t code, uint32_t wave_size,
                                             std::vector<uint32_t>& crossed_calls) {

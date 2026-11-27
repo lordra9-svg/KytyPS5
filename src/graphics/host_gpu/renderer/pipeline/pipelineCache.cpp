@@ -236,6 +236,10 @@ std::span<const uint32_t> PipelineCache::Program::FunctionCode() const {
 bool PipelineCache::Program::RefreshCallSource(const ShaderRecompiler::IR::SrtRuntime& runtime) {
 	const auto revision = call_source->revision;
 	ShaderRecompiler::RefreshShaderSource(*call_source, runtime);
+	if (call_source->unsupported_call_pc != UINT32_MAX) {
+		skip_dispatch = true;
+		return true;
+	}
 	resource_plan.source_reads = call_source->reads;
 	return revision != call_source->revision;
 }
@@ -364,6 +368,7 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 		ShaderModule* module = nullptr;
 		if (cached.call_source) {
 			source_changed = cached.RefreshCallSource(runtime);
+			if (cached.skip_dispatch) return nullptr;
 			if (!source_changed) module = cached.FindModule<true>(runtime, push_data);
 		} else {
 			module = cached.FindModule<false>(runtime, push_data);
@@ -395,6 +400,13 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	if (current != nullptr) {
 		if (!current->calls.empty()) {
 			if (entry == m_program_cache.end()) ShaderRecompiler::RefreshShaderSource(*current, runtime);
+			if (current->unsupported_call_pc != UINT32_MAX) {
+				PipelineCacheLog("!!! COMPUTE DISPATCH SKIP !!! shader=0x{:016x} pc=0x{:08x} "
+				                 "reason=GPU-selected callable has an empty function table; rendering is incomplete",
+				                 params.hash, current->unsupported_call_pc);
+				m_program_cache.emplace(m_lookup_key, Program {.skip_dispatch = true});
+				return nullptr;
+			}
 			// The callback is a plain function pointer, so everything it needs goes through `job`.
 			struct Job {
 				const ShaderRecompiler::ShaderSource*  source;
