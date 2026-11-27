@@ -462,6 +462,8 @@ Audio::Id Audio::AudioOutOpen(int type, uint32_t samples_num, uint32_t freq, For
 			if (type != AUDIO_OUT_PORT_TYPE_VIBRATION) {
 				OpenSdlDevice(&port);
 			}
+			LOGF("PROBE AudioOut open: id=%d type=%d samples=%u freq=%u format=0x%x channels=%d\n",
+			     id, type, samples_num, freq, static_cast<uint32_t>(format), port.channels_num);
 			if (type == AUDIO_OUT_PORT_TYPE_VIBRATION || type == AUDIO_OUT_PORT_TYPE_PADSPK) {
 				port.haptics =
 				    Controller::DualSenseHaptics::Open(freq, type == AUDIO_OUT_PORT_TYPE_PADSPK);
@@ -480,6 +482,8 @@ bool Audio::AudioOutClose(Id handle) {
 	if (AudioOutValid(handle)) {
 		auto& port = m_out_ports[handle.GetId()];
 
+		LOGF("PROBE AudioOut close: id=%d type=%d channels=%d\n", handle.GetId(), port.type,
+		     port.channels_num);
 		CloseSdlDevice(&port);
 		port = {};
 
@@ -524,6 +528,7 @@ bool Audio::AudioOutSetVolume(Id handle, uint32_t bitflag, const int* volume) {
 	if (AudioOutValid(handle)) {
 		auto& port = m_out_ports[handle.GetId()];
 
+		LOGF("PROBE AudioOut set volume: id=%d flags=0x%x\n", handle.GetId(), bitflag);
 		for (int i = 0; i < port.channels_num; i++, bitflag >>= 1u) {
 			auto bit = bitflag & 0x1u;
 
@@ -549,8 +554,25 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 	bool                            any_device = false;
 	uint64_t                        deadline   = 0;
 
+	static std::array<uint64_t, OUT_PORTS_MAX> probe_calls {};
 	for (uint32_t i = 0; i < num; i++) {
 		auto& port = m_out_ports[params[i].handle.GetId()];
+		const auto  call_id = static_cast<uint32_t>(params[i].handle.GetId());
+		if ((++probe_calls[call_id] % 200u) == 0u && params[i].data != nullptr) {
+			const auto count = static_cast<size_t>(port.samples_num) * port.channels_num;
+			float      peak  = 0.0f;
+			if (FormatIsFloat(port.format)) {
+				const auto* samples = static_cast<const float*>(params[i].data);
+				for (size_t k = 0; k < count; ++k) peak = std::max(peak, std::abs(samples[k]));
+			} else {
+				const auto* samples = static_cast<const int16_t*>(params[i].data);
+				for (size_t k = 0; k < count; ++k)
+					peak = std::max(peak, std::abs(static_cast<float>(samples[k])) / 32768.0f);
+			}
+			LOGF("PROBE AudioOut output: id=%u calls=%llu channels=%d samples=%u peak=%.4f\n",
+			     call_id, static_cast<unsigned long long>(probe_calls[call_id]), port.channels_num,
+			     port.samples_num, peak);
+		}
 		const float gain =
 		    port.type == AUDIO_OUT_PORT_TYPE_PADSPK
 		        ? Controller::GetSettingScale(Controller::Setting::SpeakerVolume)
