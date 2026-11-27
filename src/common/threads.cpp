@@ -1,5 +1,7 @@
 #include "common/threads.h"
 
+#include "common/assert.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>

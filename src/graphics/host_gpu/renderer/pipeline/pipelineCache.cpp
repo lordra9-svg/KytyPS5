@@ -42,6 +42,8 @@ namespace Libs::Graphics {
 
 namespace {
 
+// Linked leaf bodies produce very deep IR value graphs; translate and compile them on a large stack.
+constexpr size_t LinkedShaderStackBytes = size_t {256} << 20u;
 constexpr auto DriverCacheSaveInterval = std::chrono::minutes {1};
 
 uint8_t RemapSourceAlphaFactor(uint8_t factor) {
@@ -346,6 +348,7 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	options.back_code       = params.back_code;
 	options.dump_ir         = Config::GetShaderLogDirection() != Config::LogDirection::Silent;
 	options.emit_debug_info = Config::GraphicsDebugDumpEnabled();
+	options.function_table_calls = Config::FunctionTableCallsEnabled();
 	ShaderRecompiler::ShaderSource source;
 	if (entry == m_program_cache.end()) {
 		DumpShader(params.code, fmt::format("original/{}_{:016x}.bin",
@@ -364,7 +367,16 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	if (current != nullptr) {
 		if (!current->calls.empty()) {
 			if (entry == m_program_cache.end()) ShaderRecompiler::RefreshShaderSource(*current, runtime);
-			translated = ShaderRecompiler::TranslateProgram(current->linked->decoded, options);
+			// The callback is a plain function pointer, so everything it needs goes through `job`.
+			struct Job {
+				const ShaderRecompiler::ShaderSource*  source;
+				const ShaderRecompiler::CompileOptions* options;
+				ShaderRecompiler::TranslateResult*    result;
+			} job {current, &options, &translated};
+			Common::RunWithStack(LinkedShaderStackBytes, [](void* arg) {
+				auto& job = *static_cast<Job*>(arg);
+				*job.result = ShaderRecompiler::TranslateProgram(job.source->linked->decoded, *job.options);
+			}, &job);
 			translated.program.source_reads = current->reads;
 		} else {
 			translated = ShaderRecompiler::TranslateProgram(current->decoded, options);
@@ -389,8 +401,28 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 			return bind(*module);
 		}
 	}
-	return bind(CompileModule(entry->second, entry->first, options, std::move(translated),
-	                          push_data));
+	// Later passes and SPIR-V emission walk the same deep graphs, so compile on the large stack too.
+	ShaderModule* compiled = nullptr;
+	if (entry->second.call_source != nullptr) {
+		struct Job {
+			PipelineCache*                          self;
+			Program*                                program;
+			const ProgramKey*                       key;
+			const ShaderRecompiler::CompileOptions* options;
+			ShaderRecompiler::TranslateResult*      translated;
+			ShaderRecompiler::IR::PushData::Window* push_data;
+			ShaderModule*                           result;
+		} job {this, &entry->second, &entry->first, &options, &translated, &push_data, nullptr};
+		Common::RunWithStack(LinkedShaderStackBytes, [](void* arg) {
+			auto& job = *static_cast<Job*>(arg);
+			job.result = &job.self->CompileModule(*job.program, *job.key, *job.options,
+			                                      std::move(*job.translated), *job.push_data);
+		}, &job);
+		compiled = job.result;
+	} else {
+		compiled = &CompileModule(entry->second, entry->first, options, std::move(translated), push_data);
+	}
+	return bind(*compiled);
 }
 
 PipelineCache::PipelineCache(GraphicContext&                         graphics,
