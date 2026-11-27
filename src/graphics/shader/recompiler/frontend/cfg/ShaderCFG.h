@@ -121,6 +121,10 @@ bool MayWriteScalarRegister(const Decoder::Instruction& inst, uint32_t code, uin
 std::optional<uint32_t> FindScalarDefinition(const Decoder::Program& program, const Graph& graph,
                                              uint32_t before, uint32_t code, uint32_t wave_size,
                                              std::vector<uint32_t>& crossed_calls);
+// Every reaching definition of a scalar register, sorted and de-duplicated.
+std::vector<uint32_t> FindScalarDefinitions(const Decoder::Program& program, const Graph& graph,
+                                            uint32_t before, uint32_t code, uint32_t wave_size,
+                                            std::vector<uint32_t>& crossed_calls);
 // Returns structured control flow or failure diagnostics without changing the native graph.
 // On failure, failure_block is an original block ID or UINT32_MAX.
 Graph       Structurize(const Graph& graph);

@@ -1735,6 +1735,53 @@ std::optional<uint32_t> FindScalarDefinition(const Decoder::Program& program, co
 	return definition;
 }
 
+std::vector<uint32_t> FindScalarDefinitions(const Decoder::Program& program, const Graph& graph,
+                                            uint32_t before, uint32_t code, uint32_t wave_size,
+                                            std::vector<uint32_t>& crossed_calls) {
+	EXIT_IF(before >= program.instructions.size());
+	const auto found = std::ranges::find_if(graph.blocks, [before](const auto& block) {
+		return block.inst_begin <= before && before < block.inst_end;
+	});
+	EXIT_IF(found == graph.blocks.end());
+	std::vector<std::pair<uint32_t, uint32_t>> pending {{found->id, before}};
+	std::set<std::pair<uint32_t, uint32_t>> visited;
+	// Several writes can reach one use, e.g. a callee address loaded before a loop and
+	// reloaded on the back edge after the call clobbered it. Callers decide whether the
+	// candidates agree.
+	std::vector<uint32_t> definitions;
+	while (!pending.empty()) {
+		const auto point = pending.back();
+		pending.pop_back();
+		if (!visited.insert(point).second) continue;
+		const auto* block = graph.FindBlock(point.first);
+		EXIT_IF(block == nullptr);
+		uint32_t index = UINT32_MAX;
+		for (uint32_t i = point.second; i > block->inst_begin;) {
+			const auto& inst = program.instructions[--i];
+			if (inst.opcode == Opcode::S_SWAPPC_B64) {
+				EXIT_NOT_IMPLEMENTED(MayWriteScalarRegister(inst, code, wave_size));
+				crossed_calls.push_back(i);
+				continue;
+			}
+			if (MayWriteScalarRegister(inst, code, wave_size)) { index = i; break; }
+		}
+		if (index != UINT32_MAX || block->id == graph.entry_block) {
+			definitions.push_back(index);
+			continue;
+		}
+		EXIT_IF(block->predecessors.empty());
+		for (const auto predecessor: block->predecessors) {
+			pending.emplace_back(predecessor, graph.blocks[predecessor].inst_end);
+		}
+	}
+	EXIT_IF(definitions.empty());
+	std::ranges::sort(definitions);
+	definitions.erase(std::unique(definitions.begin(), definitions.end()), definitions.end());
+	std::ranges::sort(crossed_calls);
+	crossed_calls.erase(std::unique(crossed_calls.begin(), crossed_calls.end()), crossed_calls.end());
+	return definitions;
+}
+
 std::string BranchConditionToString(BranchCondition condition) {
 	switch (condition) {
 		case BranchCondition::Always: return "always";
