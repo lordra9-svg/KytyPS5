@@ -1013,6 +1013,14 @@ public:
 		out->details.audio.size          = current_audio->info.details.audio.size;
 		std::memcpy(out->details.audio.language_code,
 		            current_audio->info.details.audio.language_code, 4);
+		static uint64_t probe_audio = 0;
+		if ((++probe_audio % 100u) == 0u) {
+			LOGF("PROBE av audio: ts=%" PRIu64 " off=%" PRIu64 " size=%" PRIu32 " rate=%" PRIu32
+			     "\n",
+			     static_cast<uint64_t>(current_audio->info.time_stamp),
+			     current_audio->timestamp_offset, current_audio->info.details.audio.size,
+			     current_audio->info.details.audio.sample_rate);
+		}
 		start_time_ms = current_audio->info.time_stamp + current_audio->timestamp_offset;
 		clock_start   = std::chrono::steady_clock::now();
 		paused_extra  = {};

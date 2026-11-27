@@ -206,7 +206,12 @@ public:
 				break;
 			}
 			if (output_size - result.output_written < frame_output_bytes) {
-				result.result |= AJM_RESULT_NOT_ENOUGH_ROOM;
+				// A multi-frame job whose output filled after some frames is a successful partial
+				// decode: the caller advances by input_consumed and submits the rest. Reporting
+				// NOT_ENOUGH_ROOM here makes callers treat every full buffer as a failed job.
+				if (result.frames == 0) {
+					result.result |= AJM_RESULT_NOT_ENOUGH_ROOM;
+				}
 				break;
 			}
 
@@ -243,6 +248,17 @@ public:
 
 		result.total_decoded_samples = m_total_decoded_samples;
 		result.format                = GetFormat();
+		if (m_codec_info.channels == 36 && multiple_frames) {
+			static uint64_t probe_jobs = 0;
+			if ((++probe_jobs % 50u) == 0u) {
+				LOGF("PROBE at9: in=%zu out=%zu frames=%u consumed=%zu written=%zu total=%llu "
+				     "result=0x%x\n",
+				     input_size, output_size, result.frames, result.input_consumed,
+				     result.output_written,
+				     static_cast<unsigned long long>(result.total_decoded_samples),
+				     result.result);
+			}
+		}
 		return result;
 	}
 
