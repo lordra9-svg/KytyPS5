@@ -236,11 +236,10 @@ std::span<const uint32_t> PipelineCache::Program::FunctionCode() const {
 bool PipelineCache::Program::RefreshCallSource(const ShaderRecompiler::IR::SrtRuntime& runtime) {
 	const auto revision = call_source->revision;
 	ShaderRecompiler::RefreshShaderSource(*call_source, runtime);
-	if (call_source->unlinkable_table_pc != UINT32_MAX) {
-		skip_dispatch = true;
-		return true;
-	}
-	resource_plan.source_reads = call_source->reads;
+	skip_dispatch = call_source->unlinkable_call_pc != UINT32_MAX;
+	if (skip_dispatch) return true;
+	resource_plan.source_reads    = call_source->reads;
+	resource_plan.call_table_reads = call_source->table_reads;
 	return revision != call_source->revision;
 }
 
@@ -373,13 +372,16 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	bool source_changed = false;
 	if (entry != m_program_cache.end()) {
 		auto& cached = entry->second;
-		if (cached.skip_dispatch) return nullptr;
 		ShaderModule* module = nullptr;
 		if (cached.call_source) {
+			// The table is re-read on every dispatch: a table that was empty (GPU-written or
+			// uploaded after the pipeline was built) can become linkable later.
 			source_changed = cached.RefreshCallSource(runtime);
 			if (cached.skip_dispatch) return nullptr;
 			if (!source_changed) module = cached.FindModule<true>(runtime, push_data);
 		} else {
+			// A shader the SRT walker could not resolve at all is permanently unsupported.
+			if (cached.skip_dispatch) return nullptr;
 			module = cached.FindModule<false>(runtime, push_data);
 		}
 		if (module != nullptr) return bind(*module);
@@ -409,11 +411,20 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	if (current != nullptr) {
 		if (!current->calls.empty()) {
 			if (entry == m_program_cache.end()) ShaderRecompiler::RefreshShaderSource(*current, runtime);
-			if (current->unlinkable_table_pc != UINT32_MAX) {
+			if (current->unlinkable_call_pc != UINT32_MAX) {
 				PipelineCacheLog("!!! COMPUTE DISPATCH SKIP !!! shader=0x{:016x} pc=0x{:08x} "
-				                 "reason=GPU-selected callable has an empty function table; rendering is incomplete",
-				                 params.hash, current->unlinkable_table_pc);
-				m_program_cache.emplace(m_lookup_key, Program {.skip_dispatch = true});
+				                 "reason=GPU-selected callable cannot be linked yet; rendering is incomplete",
+				                 params.hash, current->unlinkable_call_pc);
+				// Keep the source: a later refresh re-reads the table and may be able to link.
+				if (entry == m_program_cache.end()) {
+					auto retained = source.calls.empty()
+					                    ? nullptr
+					                    : std::make_unique<ShaderRecompiler::ShaderSource>(std::move(source));
+					entry = m_program_cache
+					            .emplace(m_lookup_key, Program {.call_source = std::move(retained)})
+					            .first;
+				}
+				entry->second.skip_dispatch = true;
 				return nullptr;
 			}
 			// The callback is a plain function pointer, so everything it needs goes through `job`.
@@ -441,11 +452,15 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 		    .call_source   = std::move(retained),
 		    .resource_plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program),
 		}).first;
+		if (entry->second.call_source != nullptr)
+			entry->second.resource_plan.call_table_reads = entry->second.call_source->table_reads;
 		auto& program = entry->second;
 		EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
 		    program.resource_plan, runtime, program.resources, program.specialization));
 	} else if (source_changed) {
 		entry->second.resource_plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program);
+		if (entry->second.call_source != nullptr)
+			entry->second.resource_plan.call_table_reads = entry->second.call_source->table_reads;
 		if (const auto* module = entry->second.FindModule<true>(runtime, push_data)) {
 			return bind(*module);
 		}

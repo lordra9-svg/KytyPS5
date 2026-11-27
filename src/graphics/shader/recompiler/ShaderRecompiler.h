@@ -80,12 +80,17 @@ struct ShaderSource {
 	IR::ResourcePlan call_targets;
 	std::vector<Call> calls;
 	uint32_t unsupported_call_pc = UINT32_MAX;
-	// Set when a function table is empty at refresh time: the dispatch must be skipped.
-	uint32_t unlinkable_table_pc = UINT32_MAX;
+	// Set when a call cannot be linked from the values read by the current refresh (an empty
+	// function table, or reaching definitions that pick different callees): the dispatch must
+	// be skipped. Refresh clears it first, so a later table upload can link the same source.
+	uint32_t unlinkable_call_pc = UINT32_MAX;
 	uint32_t wave_size = 64;
 	std::optional<Linked> linked;
 	uint64_t revision = 0;
 	std::vector<std::pair<uint64_t, uint64_t>> reads;
+	// Ranges read to resolve function-table targets, tracked separately from `reads` so the
+	// pipeline can reject writes that would make a linked target stale.
+	std::vector<std::pair<uint64_t, uint64_t>> table_reads;
 };
 
 [[nodiscard]] const char* StageName(ShaderType stage);

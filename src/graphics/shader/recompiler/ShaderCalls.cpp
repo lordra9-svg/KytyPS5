@@ -30,9 +30,21 @@ namespace {
 constexpr uint32_t SoppBranch      = 0x02u;
 constexpr uint32_t SoppCbranchScc1 = 0x05u;
 constexpr uint32_t SopcCmpLgU32    = 0x07u;
+constexpr uint32_t InlineLiteral   = 0xffu; // next dword is an immediate
 constexpr uint64_t MaxTableBytes   = uint64_t {64} << 20u;
 constexpr uint64_t TableChunkBytes = uint64_t {1} << 20u;
 constexpr uint32_t MaxTableCallees = 64u;
+
+uint32_t EncodeSopc(uint32_t op, uint32_t ssrc0, uint32_t ssrc1) {
+	return 0xbf000000u | (op << 16u) | (ssrc1 << 8u) | ssrc0;
+}
+
+// Cross-layout jumps only need to decode as a branch: the CFG and the translator take the
+// target from branch_target, so the displacement must not be range-checked (a linked body can
+// sit farther away than S_BRANCH can encode).
+uint32_t EncodeUncheckedBranch(uint32_t op) {
+	return 0xbf800000u | (op << 16u);
+}
 
 uint32_t EncodeSoppBranch(uint32_t op, uint32_t pc, uint32_t target) {
 	const auto words = (static_cast<int64_t>(target) - static_cast<int64_t>(pc) - 4) / 4;
@@ -188,7 +200,12 @@ void PrepareCallTargets(ShaderSource& source, const CompileOptions& options) {
 	};
 	Produce = [&](uint32_t index, uint32_t code) -> Value {
 		if (index == UINT32_MAX) {
-			EXIT_IF(code < query.user_data_base || code - query.user_data_base >= query.user_data_count);
+			// A launch register outside the user-data span (s4 as the workgroup id, for example)
+			// cannot be planned. Return an unplannable value so the call takes the dispatch-skip
+			// path instead of terminating emulation.
+			if (code < query.user_data_base ||
+			    code - query.user_data_base >= query.user_data_count)
+				return Value(&block.AppendNewInst(ValueOpcode::UndefU32));
 			return IREmitter(&block).GetUserData(static_cast<ScalarReg>(code));
 		}
 		auto [entry, inserted] = producers.try_emplace(index);
@@ -307,14 +324,23 @@ void PrepareCallTargets(ShaderSource& source, const CompileOptions& options) {
 
 const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtRuntime& runtime) {
 	EXIT_IF(source.unsupported_call_pc != UINT32_MAX);
+	// A refresh re-reads the tables and re-evaluates the targets; an earlier refresh's failure
+	// says nothing about this one. The pipeline retries these sources on every dispatch.
+	source.unlinkable_call_pc = UINT32_MAX;
 	auto& reads = source.reads;
 	reads.clear();
+	source.table_reads.clear();
 	std::vector<uint32_t> flat;
 	const bool walked = IR::WalkSrt(source.call_targets, runtime, flat, &reads);
 	const auto read_memory = [&](uint64_t address, std::span<uint32_t> words) {
 		if (runtime.read_specialization_memory == nullptr ||
 		    !runtime.read_specialization_memory(runtime.userdata, address, words)) return false;
 		reads.emplace_back(address, words.size_bytes());
+		return true;
+	};
+	const auto read_table = [&](uint64_t address, std::span<uint32_t> words) {
+		if (!read_memory(address, words)) return false;
+		source.table_reads.emplace_back(address, words.size_bytes());
 		return true;
 	};
 	for (auto& site: source.calls) {
@@ -342,9 +368,12 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 				const auto chunk_bytes = std::min<uint64_t>(TableChunkBytes, size - chunk_start) & ~uint64_t {3};
 				if (chunk_bytes == 0u) break;
 				chunk.resize(chunk_bytes / 4u);
-				if (!read_memory(base + chunk_start, chunk))
-					EXIT("shader call at pc 0x%08x cannot read its function table at +0x%llx", pc,
-					     static_cast<unsigned long long>(chunk_start));
+				if (!read_table(base + chunk_start, chunk)) {
+					LOGF("shader call at pc 0x%08x cannot read its function table at +0x%llx; "
+					     "skipping the dispatch\n", pc, static_cast<unsigned long long>(chunk_start));
+					source.unlinkable_call_pc = pc;
+					return source.decoded;
+				}
 				// Each entry belongs to the chunk where its target pair starts, so every pair is
 				// visited exactly once: the first entry here is the first whose pair starts at or
 				// after chunk_start (the entry itself may start in the previous chunk). A pair that
@@ -361,8 +390,11 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 					std::array<uint32_t, 2> words {};
 					if (at + 8u <= chunk_bytes) {
 						words = {chunk[at / 4u], chunk[at / 4u + 1u]};
-					} else if (!read_memory(base + entry + table.low_offset, words)) {
-						EXIT("shader call at pc 0x%08x cannot read its function table", pc);
+					} else if (!read_table(base + entry + table.low_offset, words)) {
+						LOGF("shader call at pc 0x%08x cannot read its function table; "
+						     "skipping the dispatch\n", pc);
+						source.unlinkable_call_pc = pc;
+						return source.decoded;
 					}
 					// Zero entries are unused. Targets are kept raw (with their low bits):
 					// the dispatcher compares the exact register values the shader loads.
@@ -377,10 +409,11 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 			}
 			// A table with no live entry means the buffer read at pipeline-build time was empty
 			// (typically GPU-written or not uploaded yet). Running the shader would skip the call
-			// and break its control flow, so fall back to the old dispatch-skip behavior.
+			// and break its control flow, so fall back to the old dispatch-skip behavior. The
+			// pipeline keeps the source and retries it, so a later upload can still link.
 			if (site.table_targets.empty()) {
 				LOGF("shader call at pc 0x%08x: function table is empty; skipping the dispatch\n", pc);
-				source.unlinkable_table_pc = pc;
+				source.unlinkable_call_pc = pc;
 				return source.decoded;
 			}
 			site.address = 0;
@@ -394,11 +427,19 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 				uint32_t word = 0;
 				if (!walked || !IR::WalkedValue(source.call_targets, site.target[i][c], word))
 					EXIT("shader call at pc 0x%08x has an unavailable scalar target", pc);
-				// Distinct candidates are fine as long as they name the same callee.
-				if (c != 0 && word != words[i])
-					EXIT("shader call at pc 0x%08x selects between callees at runtime "
-					     "(s%u candidates 0x%08x and 0x%08x)", pc,
+				// Distinct candidates are fine as long as they name the same callee. SWAPPC
+				// ignores the target's low two bits, so candidates that differ only there are
+				// the same address; the high word is compared in full. If they still disagree
+				// the target depends on GPU data we cannot plan, so skip this dispatch instead
+				// of terminating emulation (the guest does not need it to boot).
+				const auto mask = i == 0u ? ~uint32_t {3} : ~uint32_t {0};
+				if (c != 0 && (word & mask) != (words[i] & mask)) {
+					LOGF("shader call at pc 0x%08x selects between callees at runtime "
+					     "(s%u candidates 0x%08x and 0x%08x); skipping the dispatch\n", pc,
 					     source.decoded.instructions[site.instruction].src0.reg + i, words[i], word);
+					source.unlinkable_call_pc = pc;
+					return source.decoded;
+				}
 				words[i] = word;
 			}
 		}
@@ -550,6 +591,18 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 		// SWAPPC ignores the target's low two bits, and the table holds the exact pairs compared
 		// here; a target outside the table (impossible while it is unchanged) skips the call.
 		EXIT_NOT_IMPLEMENTED(call.word_count != 1u);
+		// 48 bytes per target:
+		//   +0  s_cmp_lg_u32 lo, k.low   (2 words)
+		//   +8  s_cbranch_scc1 next
+		//   +12 s_cmp_lg_u32 hi, k.high  (2 words)
+		//   +20 s_cbranch_scc1 next
+		//   +24 s_swappc_b64 (linked to body k)
+		//   +28 s_mov_b32 lo, k.low      (2 words)
+		//   +36 s_mov_b32 hi, k.high     (2 words)
+		//   +44 s_branch end
+		// The compares write SCC, which SWAPPC would preserve. Keeping it needs a scratch
+		// register, and every candidate (VCC, M0, spare SGPRs) is guest-visible: stashing SCC in
+		// one of them only moves the clobber. The chain therefore leaves SCC at 0 for the leaf.
 		constexpr uint32_t EntryBytes = 48u;
 		const auto& targets  = site.table_targets;
 		const auto  chain_pc = function_pc;
@@ -562,10 +615,10 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 			body_pcs.push_back(next_body);
 			next_body += byte_size(load(site, target & ~uint64_t {3}));
 		}
-		// Raw encodings: SOPC s_cmp_lg_u32 sN, literal and SOP1 s_mov_b32 sN, literal
-		// (ssrc 0xff = literal dword follows).
 		const auto low_sgpr = call.src0.reg, high_sgpr = call.src0.reg + 1u;
-		const auto compare  = [](uint32_t sgpr) { return 0xbf000000u | (SopcCmpLgU32 << 16u) | (0xffu << 8u) | sgpr; };
+		const auto compare  = [](uint32_t sgpr) {
+			return EncodeSopc(SopcCmpLgU32, sgpr, InlineLiteral);
+		};
 		const auto move     = [](uint32_t sgpr) { return 0xbe8003ffu | (sgpr << 16u); }; // s_mov_b32 sgpr, literal
 		for (size_t k = 0; k < targets.size(); ++k) {
 			const auto entry = chain_pc + static_cast<uint32_t>(k) * EntryBytes;
@@ -583,11 +636,11 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 			                  Decoder::Opcode::S_MOV_B32);
 			AppendSynthesized(linked, {move(high_sgpr), static_cast<uint32_t>(targets[k] >> 32u)}, entry + 36u,
 			                  Decoder::Opcode::S_MOV_B32);
-			AppendSynthesized(linked, {EncodeSoppBranch(SoppBranch, entry + 44u, end_pc)}, entry + 44u,
+			AppendSynthesized(linked, {EncodeUncheckedBranch(SoppBranch)}, entry + 44u,
 			                  Decoder::Opcode::S_BRANCH, end_pc);
 		}
 		// No entry matched (or a matched callee returned and branched here): continue after the call.
-		AppendSynthesized(linked, {EncodeSoppBranch(SoppBranch, end_pc, return_pc)}, end_pc,
+		AppendSynthesized(linked, {EncodeUncheckedBranch(SoppBranch)}, end_pc,
 		                  Decoder::Opcode::S_BRANCH, return_pc);
 		function_pc = end_pc + 4u;
 		for (size_t k = 0; k < targets.size(); ++k) {
@@ -595,7 +648,7 @@ const Decoder::Program& RefreshShaderSource(ShaderSource& source, const IR::SrtR
 			EXIT_IF(append_body(site, targets[k] & ~uint64_t {3}, return_to) != body_pcs[k]);
 		}
 		// The native call jumps to the dispatcher instead.
-		const auto jump = EncodeSoppBranch(SoppBranch, call.pc, chain_pc);
+		const auto jump = EncodeUncheckedBranch(SoppBranch);
 		const std::vector<uint32_t> jump_code {jump};
 		Decoder::Instruction branch;
 		Decoder::DecodeInstruction(jump_code, 0u, branch);

@@ -1724,11 +1724,18 @@ std::vector<uint32_t> FindScalarDefinitions(const Decoder::Program& program, con
 			}
 			if (MayWriteScalarRegister(inst, code, wave_size)) { index = i; break; }
 		}
-		if (index != UINT32_MAX || block->id == graph.entry_block) {
+		if (index != UINT32_MAX) {
 			definitions.push_back(index);
 			continue;
 		}
-		EXIT_IF(block->predecessors.empty());
+		// No local writer. The launch pair reaches the use from the entry block, but a back edge
+		// into the entry block (a call re-entered with a reloaded pair) reaches it too, so record
+		// the sentinel and keep walking. An entry block without predecessors yields only that.
+		if (block->id == graph.entry_block) {
+			definitions.push_back(UINT32_MAX);
+		} else {
+			EXIT_IF(block->predecessors.empty());
+		}
 		for (const auto predecessor: block->predecessors) {
 			pending.emplace_back(predecessor, graph.blocks[predecessor].inst_end);
 		}
