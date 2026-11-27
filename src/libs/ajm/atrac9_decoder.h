@@ -370,6 +370,9 @@ private:
 		                        ? m_codec_info.frameSamples * AjmBytesPerSample(m_sample_encoding)
 		                        : 0);
 
+		LOGF("AJM ATRAC9 config: stream_count=%u per_stream_channels=%d per_stream_superframe=%d\n",
+		     config.stream_count, config.info.channels / static_cast<int>(config.stream_count),
+		     config.info.superframeSize / static_cast<int>(config.stream_count));
 		LOGF("AJM ATRAC9 initialized: %d Hz, %d ch, frame_samples=%d, superframe=%d bytes/%d "
 		     "frames\n",
 		     m_codec_info.samplingRate, m_codec_info.channels, m_codec_info.frameSamples,
@@ -406,6 +409,8 @@ private:
 			return DecodeStream(m_streams[0].handle.get(), input, m_pcm_buffer.data(), bytes_used);
 		}
 		const auto channels = m_streams.size();
+		static uint64_t dmc_calls = 0;
+		const bool      dmc_log   = (++dmc_calls % 100u) == 0u;
 		const auto sample_bytes = AjmBytesPerSample(m_sample_encoding);
 		const auto stream_size = static_cast<uint32_t>(m_codec_info.superframeSize / channels);
 		const bool last_frame = m_num_frames + 1u ==
@@ -429,6 +434,19 @@ private:
 			// precedes the next channel, rather than following the aggregate frame.
 			*bytes_used += last_frame ? stream_size - stream.bytes_used : used;
 			stream.bytes_used = last_frame ? 0 : stream.bytes_used + used;
+			if (dmc_log && channel == 0u) {
+				float peak = 0.0f;
+				if (m_sample_encoding == AjmSampleEncoding::S16) {
+					const auto* pcm = reinterpret_cast<const int16_t*>(m_stream_pcm.data());
+					for (int s = 0; s < m_codec_info.frameSamples; ++s) {
+						const float a = static_cast<float>(pcm[s] < 0 ? -pcm[s] : pcm[s]) / 32768.0f;
+						peak = a > peak ? a : peak;
+					}
+				}
+				LOGF("AJM DMC: streams=%zu stream_size=%u frame_samples=%d channels=%d enc=%u "
+				     "used=%d peak=%.4f\n", channels, stream_size, m_codec_info.frameSamples,
+				     m_codec_info.channels, static_cast<uint32_t>(m_sample_encoding), used, peak);
+			}
 			if (sample_bytes == 2) InterleaveStream<2>(channel);
 			else InterleaveStream<4>(channel);
 		}
