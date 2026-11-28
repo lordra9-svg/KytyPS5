@@ -7,3 +7,6 @@ _Build/
 cmake-build-debug/
 _PipelineCache/
 CMakeUserPresets.json
+# Emulator runtime data written on first run
+_DownloadData/
+_SaveData/
